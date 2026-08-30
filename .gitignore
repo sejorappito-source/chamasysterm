@@ -1,0 +1,5 @@
+_build/
+rebar.lock
+*.beam
+erl_crash.dump
+.rebar3/

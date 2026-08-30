@@ -1,0 +1,27 @@
+-module(chama_router).
+
+-export([routes/0]).
+
+%% All API routes live under /api. Every handler is a plain cowboy
+%% handler (init/2) that inspects cowboy_req:method/1 itself, so the
+%% same path can serve GET (list/read) and POST (create/act).
+routes() ->
+    [
+        {'_', [
+            {"/api/setup",                        chama_setup_handler,    []},
+            {"/api/auth/signin",                  chama_auth_handler,     []},
+            {"/api/regions",                      chama_regions_handler,  []},
+            {"/api/members",                      chama_members_handler,  []},
+            {"/api/members/:member_id",           chama_members_handler,  []},
+            {"/api/payments",                     chama_payments_handler, []},
+            {"/api/transactions",                 chama_transactions_handler, []},
+            {"/api/funerals",                     chama_funerals_handler, []},
+            {"/api/funerals/:funeral_id",         chama_funerals_handler, []},
+            {"/api/funerals/:funeral_id/expenses", chama_funerals_handler, []},
+            {"/api/audit-log",                    chama_audit_handler,    []},
+            {"/api/reports/dashboard",             chama_reports_handler, []},
+            {"/api/reports/region/:region_code",   chama_reports_handler, []},
+            {"/api/reports/financial",             chama_reports_handler, []},
+            {"/api/reports/funerals",              chama_reports_handler, []}
+        ]}
+    ].

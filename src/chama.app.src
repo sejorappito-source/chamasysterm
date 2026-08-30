@@ -1,0 +1,17 @@
+{application, chama, [
+    {description, "Chama welfare association management backend"},
+    {vsn, "0.1.0"},
+    {registered, [chama_store]},
+    {mod, {chama_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        cowboy,
+        jsx
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

@@ -1,0 +1,24 @@
+-module(chama_auth_handler).
+
+-export([init/2]).
+
+%% POST /api/auth/signin -> { role: "Chairperson"|"Secretary", regionCode, secret }
+init(Req0, State) ->
+    Method = cowboy_req:method(Req0),
+    Req1 = handle(Method, Req0),
+    {ok, Req1, State}.
+
+handle(<<"POST">>, Req0) ->
+    case chama_http:read_json(Req0) of
+        {error, invalid_json, Req1} ->
+            chama_http:reply_bad_request(<<"Invalid JSON body">>, Req1);
+        {ok, Params, Req1} ->
+            case chama_store:signin(Params) of
+                {ok, Session} -> chama_http:reply_ok(Session, Req1);
+                {error, {bad_request, Msg}} -> chama_http:reply_bad_request(Msg, Req1);
+                {error, {unauthorized, Msg}} -> chama_http:reply_unauthorized(Msg, Req1)
+            end
+    end;
+
+handle(_, Req) ->
+    chama_http:reply_error(405, <<"Method not allowed">>, Req).
