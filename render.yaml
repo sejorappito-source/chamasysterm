@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: chama-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/setup
+    envVars:
+      - key: PORT
+        value: 8080

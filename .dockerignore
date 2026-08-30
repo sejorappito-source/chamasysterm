@@ -1,0 +1,7 @@
+_build/
+rebar.lock
+erl_crash.dump
+frontend/node_modules/
+frontend/dist/
+.git/
+*.zip
