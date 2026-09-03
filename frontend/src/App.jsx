@@ -1,5 +1,4 @@
-import React, { useState, useMemo } from "react";
-import { api, loadAllData } from "./api";
+import React, { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import {
   Users, UserPlus, CreditCard, Receipt, AlertTriangle, Heart, FileText,
   MapPin, Settings, LogOut, Search, Filter, Download, ChevronRight,
@@ -8,7 +7,7 @@ import {
   EyeOff, CircleUserRound, ClipboardList, PhoneCall, MapPinned,
   BadgeCheck, CircleAlert, ChevronDown, Menu
 } from "lucide-react";
-
+import { api, loadAllData } from "./api";
 /* ============================================================
    DESIGN TOKENS
    Navy   #0F1E33 / #16283F (hover) / brass accent #C89B4C
@@ -38,6 +37,46 @@ const fmtDate = (iso) => {
 };
 
 const REGION_COLORS = ["#C89B4C", "#2564A8", "#178A4C", "#C97A21", "#7C5CBF", "#C23B32"];
+
+const TERMS_AND_CONDITIONS = [
+  {
+    heading: "1. Purpose of the system",
+    body: "This system helps a chama (welfare association) record members, monthly contributions, funeral fund cases and expenses. It is a record-keeping tool — it does not hold or move money itself.",
+  },
+  {
+    heading: "2. Chairperson responsibilities",
+    body: "The person registering the association confirms they are authorized to do so on the association's behalf, and is responsible for the accuracy of the information entered and for keeping the chairperson password confidential.",
+  },
+  {
+    heading: "3. Secretary access",
+    body: "Region access codes should only be shared with the secretary(ies) appointed for that region. Anyone with a region's code can record members, payments and funeral cases for that region.",
+  },
+  {
+    heading: "4. Data accuracy",
+    body: "Members' national ID numbers, contributions and funeral records entered into this system should reflect what actually happened. Corrections should be made honestly and, where possible, noted rather than silently overwritten.",
+  },
+  {
+    heading: "5. Data storage",
+    body: "Unless a database has been connected by whoever deployed this system, records are kept in memory and can be lost if the service restarts or is redeployed. The association is responsible for keeping its own backups of important records in the meantime.",
+  },
+  {
+    heading: "6. Acceptable use",
+    body: "This system should only be used for genuine chama administration. It should not be used to store information about people who have not agreed to be members, or for any unlawful purpose.",
+  },
+];
+
+function TermsContent() {
+  return (
+    <div className="space-y-4">
+      {TERMS_AND_CONDITIONS.map((t) => (
+        <div key={t.heading}>
+          <h4 className="text-sm font-semibold mb-1" style={{ color: "#101828" }}>{t.heading}</h4>
+          <p className="text-sm" style={{ color: "#5B6472" }}>{t.body}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // "This month" / "last month" / "this week" windows, computed from the real
 // clock (the backend stamps transactions with the server's actual date via
@@ -117,6 +156,7 @@ function StatusPill({ status }) {
     Unpaid: ["#C23B32", "#FBEAE8"], Partial: ["#C97A21", "#FCF0E1"],
     Active: ["#178A4C", "#E7F5EC"], Deceased: ["#5B6472", "#EEF1F4"],
     Payment: ["#178A4C", "#E7F5EC"], Expense: ["#C23B32", "#FBEAE8"],
+    Planned: ["#2564A8", "#E8F0FA"], Ongoing: ["#C97A21", "#FCF0E1"],
   };
   const [fg, bg] = map[status] || ["#2564A8", "#E8F0FA"];
   return (
@@ -192,6 +232,139 @@ function StatCard({ icon: Icon, label, value, tint, sub, onClick }) {
   );
 }
 
+/* ============================================================
+   SKELETON LOADERS
+   Shimmer-bar primitives + composed skeletons that mirror the real
+   layouts (stat cards, tables, sidebar) so the shape of the page is
+   recognizable before data arrives, rather than a blank screen or a
+   spinner-and-text combo.
+============================================================ */
+const SKELETON_SHIMMER_CSS = `
+@keyframes chamaShimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+.chama-skel {
+  background: linear-gradient(90deg, #E4E7EC 0px, #EEF1F4 40px, #E4E7EC 80px);
+  background-size: 800px 100%;
+  animation: chamaShimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+.chama-skel-dark {
+  background: linear-gradient(90deg, rgba(255,255,255,0.06) 0px, rgba(255,255,255,0.14) 40px, rgba(255,255,255,0.06) 80px);
+  background-size: 800px 100%;
+  animation: chamaShimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+`;
+
+function SkelBar({ w = "100%", h = 14, dark, style = {} }) {
+  return <div className={dark ? "chama-skel-dark" : "chama-skel"} style={{ width: w, height: h, ...style }} />;
+}
+function SkelCircle({ size = 36, dark }) {
+  return <div className={dark ? "chama-skel-dark" : "chama-skel"} style={{ width: size, height: size, borderRadius: "9999px", flexShrink: 0 }} />;
+}
+
+function SkeletonStatCard() {
+  return (
+    <Card className="p-5 flex-1 min-w-[190px]">
+      <div className="flex items-center justify-between mb-3">
+        <SkelBar w={36} h={36} style={{ borderRadius: 10 }} />
+      </div>
+      <SkelBar w="60%" h={22} />
+      <div className="mt-2"><SkelBar w="80%" h={12} /></div>
+    </Card>
+  );
+}
+
+function SkeletonTableRow({ cols = 4 }) {
+  return (
+    <div className="flex items-center gap-4 px-4 py-3.5" style={{ borderBottom: "1px solid #E4E7EC" }}>
+      <SkelCircle size={32} />
+      <div className="flex-1 flex items-center gap-4">
+        {Array.from({ length: cols }).map((_, i) => (
+          <SkelBar key={i} w={i === 0 ? "28%" : "16%"} h={12} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SkeletonTable({ rows = 5, cols = 4, title }) {
+  return (
+    <Card className="overflow-hidden">
+      <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #E4E7EC" }}>
+        <SkelBar w={title ? 160 : 120} h={16} />
+        <SkelBar w={90} h={30} style={{ borderRadius: 8 }} />
+      </div>
+      {Array.from({ length: rows }).map((_, i) => <SkeletonTableRow key={i} cols={cols} />)}
+    </Card>
+  );
+}
+
+// Content-area skeleton: stat cards + a table. Used inside <main> while a
+// signed-in session is refreshing data, so the sidebar/topbar stay put and
+// only the part that's actually loading appears to shimmer.
+function DashboardContentSkeleton() {
+  return (
+    <div className="pt-6 space-y-6">
+      <style>{SKELETON_SHIMMER_CSS}</style>
+      <div className="flex items-center justify-between">
+        <SkelBar w={220} h={26} />
+        <SkelBar w={130} h={38} style={{ borderRadius: 10 }} />
+      </div>
+      <div className="flex flex-wrap gap-4">
+        {Array.from({ length: 4 }).map((_, i) => <SkeletonStatCard key={i} />)}
+      </div>
+      <SkeletonTable rows={6} cols={4} title />
+    </div>
+  );
+}
+
+// Sidebar skeleton — used only pre-auth, when we don't yet know the
+// association name, role, or nav items to render for real.
+function SidebarSkeleton() {
+  return (
+    <div className="hidden md:flex w-64 shrink-0 h-screen sticky top-0 flex-col" style={{ background: "#0F1E33" }}>
+      <div className="flex items-center gap-2.5 px-5 py-5" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <SkelCircle size={30} dark />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <SkelBar w="70%" h={12} dark />
+          <SkelBar w="45%" h={10} dark />
+        </div>
+      </div>
+      <div className="flex-1 py-3 px-3 space-y-2">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3 px-3 py-2.5">
+            <SkelBar w={17} h={17} dark style={{ borderRadius: 5 }} />
+            <SkelBar w={`${60 - i * 4}%`} h={11} dark />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Full pre-auth app-shell skeleton — shown while we're checking setup
+// status (and, if already set up, while the first data load runs) so the
+// initial screen previews the shape of the eventual dashboard instead of a
+// blank page or a spinner.
+function AppShellSkeleton() {
+  return (
+    <>
+      <style>{FONT_IMPORT}{SKELETON_SHIMMER_CSS}{`* { font-family: 'Inter', sans-serif; }`}</style>
+      <div className="flex min-h-screen" style={{ background: "#F4F6F8" }}>
+        <SidebarSkeleton />
+        <div className="flex-1 flex flex-col max-w-[1400px]">
+          <div className="flex justify-end px-6 lg:px-8 pt-4">
+            <SkelCircle size={36} />
+          </div>
+          <main className="flex-1 px-6 lg:px-8 pb-24 md:pb-8">
+            <DashboardContentSkeleton />
+          </main>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Modal({ title, onClose, children, wide }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(16,24,40,0.55)" }}>
@@ -223,17 +396,71 @@ function ConfirmDialog({ title, body, confirmLabel = "Confirm", danger, onConfir
 }
 
 /* ============================================================
+   WELCOME / LANDING
+============================================================ */
+function Welcome({ onSelectLogin, onSelectSignup }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4 py-10" style={{ background: "#F4F6F8" }}>
+      <div className="w-full max-w-lg">
+        <div className="flex flex-col items-center gap-3 mb-6 text-center">
+          <HarambeeMark size={48} />
+          <div className="font-bold text-2xl" style={{ fontFamily: "Fraunces", color: "#101828" }}>Chama Funeral & Contribution System</div>
+        </div>
+
+        <Card className="p-7 space-y-5">
+          <div className="space-y-3">
+            <p className="text-sm" style={{ color: "#5B6472" }}>
+              A <span className="font-semibold" style={{ color: "#101828" }}>chama</span> is a welfare association members
+              join to support one another — usually through regular contributions and a shared fund that covers
+              members in times of need, such as a death in the family.
+            </p>
+            <p className="text-sm" style={{ color: "#5B6472" }}>
+              This system helps a chama's leadership run that association day to day: registering members by
+              region, recording monthly contributions and payments, opening and tracking funeral fund cases and
+              their expenses, and giving the chairperson an overview of every region at a glance.
+            </p>
+          </div>
+
+          <div className="rounded-lg p-4 space-y-2" style={{ background: "#F9FAFB", border: "1px solid #E4E7EC" }}>
+            <div className="flex items-start gap-2 text-xs" style={{ color: "#5B6472" }}>
+              <Shield size={14} color="#0F1E33" className="mt-0.5 shrink-0" />
+              <span><span className="font-semibold" style={{ color: "#101828" }}>Chairperson</span> — sets up the association, manages regions and sees reports across all of them.</span>
+            </div>
+            <div className="flex items-start gap-2 text-xs" style={{ color: "#5B6472" }}>
+              <ClipboardList size={14} color="#0F1E33" className="mt-0.5 shrink-0" />
+              <span><span className="font-semibold" style={{ color: "#101828" }}>Secretary</span> — handles day-to-day record-keeping for their own region.</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 pt-1">
+            <PrimaryButton full icon={ArrowRight} onClick={onSelectLogin}>Log In</PrimaryButton>
+            <GhostButton full icon={UserPlus} onClick={onSelectSignup}>Create an Account</GhostButton>
+          </div>
+        </Card>
+
+        <p className="text-center text-xs mt-5" style={{ color: "#98A2B3" }}>
+          Already have an association registered? Log in. Setting one up for the first time? Create an account.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    ONBOARDING
 ============================================================ */
-function Onboarding({ onComplete }) {
+function Onboarding({ onComplete, onSwitchToLogin }) {
   const [step, setStep] = useState(1);
   const [assoc, setAssoc] = useState({ name: "", phone: "", location: "" });
   const [count, setCount] = useState(5);
-  const [boxes, setBoxes] = useState([]); // [{name, code, codeTouched}]
+  const [boxes, setBoxes] = useState([]); // [{name, code, codeTouched, password}]
   const [chairPassword, setChairPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const boxRefs = React.useRef([]);
+  const [agreeTerms, setAgreeTerms] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+  const [createdAccount, setCreatedAccount] = useState(null); // {code, name} once registered
+  const boxRefs = useRef([]);
 
   const makeCode = (name, index, allBoxes) => {
     const letters = name.replace(/[^a-zA-Z]/g, "").toUpperCase();
@@ -253,7 +480,7 @@ function Onboarding({ onComplete }) {
   const ensureBoxCount = (n) => {
     setBoxes((prev) => {
       const next = [...prev];
-      while (next.length < n) next.push({ name: "", code: "", codeTouched: false });
+      while (next.length < n) next.push({ name: "", code: "", codeTouched: false, password: "" });
       return next.slice(0, Math.max(n, prev.filter((b) => b.name.trim()).length));
     });
   };
@@ -280,8 +507,16 @@ function Onboarding({ onComplete }) {
     });
   };
 
+  const updatePassword = (i, value) => {
+    setBoxes((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], password: value };
+      return next;
+    });
+  };
+
   const addBox = () => {
-    setBoxes((prev) => [...prev, { name: "", code: "", codeTouched: false }]);
+    setBoxes((prev) => [...prev, { name: "", code: "", codeTouched: false, password: "" }]);
     focusBox(boxes.length);
   };
 
@@ -292,7 +527,7 @@ function Onboarding({ onComplete }) {
       e.preventDefault();
       if (!boxes[i].name.trim()) return;
       if (i === boxes.length - 1) {
-        setBoxes((prev) => [...prev, { name: "", code: "", codeTouched: false }]);
+        setBoxes((prev) => [...prev, { name: "", code: "", codeTouched: false, password: "" }]);
         focusBox(i + 1);
       } else {
         focusBox(i + 1);
@@ -309,7 +544,7 @@ function Onboarding({ onComplete }) {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-10" style={{ background: "#F4F6F8" }}>
       <div className="w-full max-w-xl">
-        <div className="flex items-center gap-3 mb-8 justify-center">
+        <div className="flex items-center gap-3 mb-4 justify-center">
           <HarambeeMark size={38} />
           <div>
             <div className="font-bold text-lg leading-tight" style={{ fontFamily: "Fraunces", color: "#101828" }}>Chama Funeral & Contribution System</div>
@@ -317,12 +552,18 @@ function Onboarding({ onComplete }) {
           </div>
         </div>
 
+        {onSwitchToLogin && (
+          <p className="text-center text-xs mb-6">
+            <button onClick={onSwitchToLogin} className="underline font-medium" style={{ color: "#5B6472" }}>Already have an account? Log in</button>
+          </p>
+        )}
+
         <div className="flex items-center justify-between mb-6 px-1">
           {steps.map((s, i) => (
             <div key={s} className="flex-1 flex items-center">
               <div className="flex flex-col items-center flex-1">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold"
-                  style={{ background: step > i + 1 || step === 4 && i < 3 ? "#178A4C" : step === i + 1 ? "#0F1E33" : "#E4E7EC", color: step >= i + 1 ? "#fff" : "#98A2B3" }}>
+                  style={{ background: step > i + 1 || step >= 4 && i < 3 ? "#178A4C" : step === i + 1 ? "#0F1E33" : "#E4E7EC", color: step >= i + 1 ? "#fff" : "#98A2B3" }}>
                   {step > i + 1 ? <Check size={14} /> : i + 1}
                 </div>
                 <span className="text-[11px] mt-1.5 text-center" style={{ color: step === i + 1 ? "#101828" : "#98A2B3", fontWeight: step === i + 1 ? 600 : 400 }}>{s}</span>
@@ -376,12 +617,12 @@ function Onboarding({ onComplete }) {
             <div className="space-y-5">
               <div>
                 <h2 className="text-xl font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Name your regions</h2>
-                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Type a region name in each box, then press <span className="font-semibold" style={{ color: "#101828" }}>space</span> to move to the next one. A short code is generated automatically — tap it to edit.</p>
+                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Type a region name, press <span className="font-semibold" style={{ color: "#101828" }}>space</span> to move to the next box. A code is generated automatically — tap it to edit. Set a password for each region too; that's what its secretary will sign in with.</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
                 {boxes.map((b, i) => (
-                  <div key={i} className="relative rounded-lg border p-3" style={{ borderColor: "#D0D5DD" }}>
+                  <div key={i} className="relative rounded-lg border p-3 space-y-2" style={{ borderColor: "#D0D5DD" }}>
                     {boxes.length > 1 && (
                       <button onClick={() => removeBox(i)} className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center bg-white hover:bg-gray-100" style={{ border: "1px solid #E4E7EC" }}>
                         <X size={11} color="#5B6472" />
@@ -393,7 +634,7 @@ function Onboarding({ onComplete }) {
                       onChange={(e) => updateName(i, e.target.value)}
                       onKeyDown={(e) => handleNameKeyDown(e, i)}
                       placeholder={`Region ${i + 1} name`}
-                      className="w-full outline-none text-sm font-medium mb-2"
+                      className="w-full outline-none text-sm font-medium"
                       style={{ color: "#101828" }}
                     />
                     <input
@@ -403,6 +644,13 @@ function Onboarding({ onComplete }) {
                       maxLength={5}
                       className="w-full text-xs font-semibold rounded px-2 py-1 outline-none"
                       style={{ background: "#F4F6F8", border: "1px solid #E4E7EC", color: "#C89B4C" }}
+                    />
+                    <input
+                      value={b.password}
+                      onChange={(e) => updatePassword(i, e.target.value)}
+                      placeholder="Secretary password"
+                      className="w-full text-xs rounded px-2 py-1 outline-none"
+                      style={{ background: "#F4F6F8", border: "1px solid #E4E7EC", color: "#101828" }}
                     />
                   </div>
                 ))}
@@ -415,6 +663,15 @@ function Onboarding({ onComplete }) {
               <Field label="Chairperson password" hint="Created now — the chairperson will use this to sign in">
                 <TextInput type="text" placeholder="Set a password" value={chairPassword} onChange={(e) => setChairPassword(e.target.value)} />
               </Field>
+              <label className="flex items-start gap-2 text-sm cursor-pointer select-none">
+                <input type="checkbox" className="mt-0.5" checked={agreeTerms} onChange={(e) => setAgreeTerms(e.target.checked)} />
+                <span style={{ color: "#5B6472" }}>
+                  I agree to the{" "}
+                  <button type="button" onClick={() => setShowTerms(true)} className="underline font-medium" style={{ color: "#101828" }}>
+                    Terms & Conditions
+                  </button>
+                </span>
+              </label>
               {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
               <div className="flex gap-3">
                 <GhostButton full icon={ChevronLeft} onClick={() => setStep(2)}>Back</GhostButton>
@@ -423,12 +680,23 @@ function Onboarding({ onComplete }) {
                   if (filled.length === 0) { setError("Add at least one region."); return; }
                   if (boxes.some((b) => b.name.trim() && !b.code.trim())) { setError("Every named region needs a code."); return; }
                   if (!codesUnique()) { setError("Region codes must be unique — two regions share a code."); return; }
+                  if (boxes.some((b) => b.name.trim() && !b.password.trim())) { setError("Set a secretary password for every region."); return; }
                   if (!chairPassword.trim()) { setError("Please set a chairperson password."); return; }
+                  if (!agreeTerms) { setError("Please agree to the Terms & Conditions to continue."); return; }
                   setError("");
                   setStep(4);
                 }}>Finish setup</PrimaryButton>
               </div>
             </div>
+          )}
+
+          {showTerms && (
+            <Modal title="Terms & Conditions" onClose={() => setShowTerms(false)} wide>
+              <TermsContent />
+              <div className="flex justify-end mt-6">
+                <PrimaryButton onClick={() => { setAgreeTerms(true); setShowTerms(false); }}>I agree</PrimaryButton>
+              </div>
+            </Modal>
           )}
 
           {step === 4 && (
@@ -437,25 +705,52 @@ function Onboarding({ onComplete }) {
                 <BadgeCheck size={32} color="#178A4C" />
               </div>
               <div>
-                <h2 className="text-xl font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Your association has been successfully registered.</h2>
-                <p className="text-sm mt-2" style={{ color: "#5B6472" }}>Region access codes have been sent to your registered phone number ending in {assoc.phone.slice(-3) || "000"}.</p>
+                <h2 className="text-xl font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Ready to register {assoc.name || "your association"}</h2>
+                <p className="text-sm mt-2" style={{ color: "#5B6472" }}>
+                  This creates a brand-new, independent account — its own members, contributions and funeral
+                  records, separate from every other association on this system.
+                </p>
               </div>
-              <div className="rounded-xl p-4 flex items-start gap-3 text-left" style={{ background: "#FCF0E1" }}>
-                <Lock size={18} color="#C97A21" className="mt-0.5 shrink-0" />
-                <p className="text-xs" style={{ color: "#8A5A18" }}>For security, region codes are not displayed here. Secretaries should retrieve theirs from the phone number on file.</p>
+              <div className="rounded-xl p-4 text-left space-y-1.5" style={{ background: "#F9FAFB", border: "1px solid #E4E7EC" }}>
+                <div className="flex justify-between text-xs"><span style={{ color: "#98A2B3" }}>Association</span><span className="font-medium" style={{ color: "#101828" }}>{assoc.name}</span></div>
+                <div className="flex justify-between text-xs"><span style={{ color: "#98A2B3" }}>Regions</span><span className="font-medium" style={{ color: "#101828" }}>{boxes.filter((b) => b.name.trim()).length}</span></div>
+                <div className="flex justify-between text-xs"><span style={{ color: "#98A2B3" }}>Chairperson password</span><span className="font-medium" style={{ color: "#101828" }}>Set</span></div>
               </div>
               {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
               <PrimaryButton full icon={ArrowRight} disabled={submitting} onClick={async () => {
                 setError("");
                 setSubmitting(true);
                 try {
-                  await onComplete({ assoc, regions: boxes.filter((b) => b.name.trim()).map((b) => ({ name: b.name.trim(), code: b.code.trim() })), chairPassword });
+                  const result = await onComplete({ assoc, regions: boxes.filter((b) => b.name.trim()).map((b) => ({ name: b.name.trim(), code: b.code.trim(), password: b.password.trim() })), chairPassword });
+                  setCreatedAccount(result);
+                  setStep(5);
                 } catch (e) {
                   setError(e.message || "Could not complete setup. Please try again.");
                 } finally {
                   setSubmitting(false);
                 }
-              }}>{submitting ? "Setting up…" : "Continue to sign in"}</PrimaryButton>
+              }}>{submitting ? "Registering…" : "Register association"}</PrimaryButton>
+            </div>
+          )}
+
+          {step === 5 && createdAccount && (
+            <div className="text-center space-y-5 py-4">
+              <div className="w-16 h-16 rounded-full mx-auto flex items-center justify-center" style={{ background: "#E7F5EC" }}>
+                <BadgeCheck size={32} color="#178A4C" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>{createdAccount.name} is registered.</h2>
+                <p className="text-sm mt-2" style={{ color: "#5B6472" }}>This account code is how you and your secretaries will find this association when signing in. Save it somewhere safe.</p>
+              </div>
+              <div className="rounded-xl p-5" style={{ background: "#0F1E33" }}>
+                <div className="text-[11px] uppercase tracking-wide" style={{ color: "#98A2B3" }}>Account code</div>
+                <div className="text-2xl font-bold tracking-wider mt-1" style={{ fontFamily: "Fraunces", color: "#fff" }}>{createdAccount.code}</div>
+              </div>
+              <div className="rounded-xl p-4 flex items-start gap-3 text-left" style={{ background: "#FCF0E1" }}>
+                <Lock size={18} color="#C97A21" className="mt-0.5 shrink-0" />
+                <p className="text-xs" style={{ color: "#8A5A18" }}>Secretaries sign in with this account code plus their region's own access code — share both with them separately.</p>
+              </div>
+              <PrimaryButton full icon={ArrowRight} onClick={() => onSwitchToLogin(createdAccount)}>Continue to sign in</PrimaryButton>
             </div>
           )}
         </Card>
@@ -467,37 +762,75 @@ function Onboarding({ onComplete }) {
 /* ============================================================
    SIGN-IN
 ============================================================ */
-function SignIn({ assocName, regions, onSignIn, onResetSetup }) {
+function SignIn({ prefill, onSignIn, onSwitchToSignup }) {
   const [step, setStep] = useState("assoc"); // assoc -> role -> credentials
-  const [assocInput, setAssocInput] = useState("");
-  const [regionCode, setRegionCode] = useState(regions[0]?.code || "");
+  const [query, setQuery] = useState("");
+  const [accounts, setAccounts] = useState([]);
+  const [loadingList, setLoadingList] = useState(true);
+  const [listError, setListError] = useState("");
+  const [foundAssoc, setFoundAssoc] = useState(null); // {code, name, regions}
+  const [selecting, setSelecting] = useState(null); // code currently being opened
+  const [regionCode, setRegionCode] = useState("");
   const [role, setRole] = useState(null);
   const [secret, setSecret] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
-
-  const submitAssoc = () => {
-    if (!assocInput.trim()) { setError("Enter your association's name."); return; }
-    if (assocName && assocInput.trim().toLowerCase() !== assocName.trim().toLowerCase()) {
-      setError("We couldn't find an association with that name."); return;
-    }
-    setError("");
-    setStep("role");
-  };
-
   const [submitting, setSubmitting] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.listAssociations();
+        if (cancelled) return;
+        setAccounts(list);
+        // If we just registered, jump straight past the picker into that account.
+        if (prefill?.code) {
+          const match = list.find((a) => a.code === prefill.code);
+          if (match) await selectAccount(match.code);
+        }
+      } catch (e) {
+        if (!cancelled) setListError(e.message || "Could not load accounts.");
+      } finally {
+        if (!cancelled) setLoadingList(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectAccount = async (code) => {
+    setError("");
+    setSelecting(code);
+    try {
+      const found = await api.findAssociation(code);
+      setFoundAssoc(found);
+      setRegionCode(found.regions[0]?.code || "");
+      setStep("role");
+    } catch (e) {
+      setError(e.message || "We couldn't open that association.");
+    } finally {
+      setSelecting(null);
+    }
+  };
+
+  const filteredAccounts = accounts.filter((a) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return a.name.toLowerCase().includes(q) || a.code.toLowerCase().includes(q);
+  });
+
   const submit = async () => {
-    if (!secret.trim()) { setError(role === "Chairperson" ? "Enter the chairperson password." : "Enter your secretary/region code."); return; }
+    if (!secret.trim()) { setError(role === "Chairperson" ? "Enter the chairperson password." : "Enter your region password."); return; }
     if (role === "Secretary") {
-      const match = regions.find((r) => r.code.toUpperCase() === regionCode.toUpperCase());
+      const match = foundAssoc.regions.find((r) => r.code.toUpperCase() === regionCode.toUpperCase());
       if (!match) { setError("Select a valid region."); return; }
     }
     setError("");
     setSubmitting(true);
     try {
-      const session = await api.signIn({ role, regionCode, secret });
-      onSignIn(session);
+      const session = await api.signIn({ associationCode: foundAssoc.code, role, regionCode, secret });
+      onSignIn({ ...session, assocName: foundAssoc.name, regions: foundAssoc.regions });
     } catch (e) {
       setError(e.message || "Sign-in failed.");
     } finally {
@@ -506,7 +839,7 @@ function SignIn({ assocName, regions, onSignIn, onResetSetup }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "#F4F6F8" }}>
+    <div className="min-h-screen flex items-center justify-center px-4 py-10" style={{ background: "#F4F6F8" }}>
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center gap-3 mb-8">
           <HarambeeMark size={44} />
@@ -520,23 +853,73 @@ function SignIn({ assocName, regions, onSignIn, onResetSetup }) {
           {step === "assoc" && (
             <>
               <div>
-                <h2 className="text-lg font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Find your association</h2>
-                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Enter the association name to continue, whether you're the chairperson or secretary.</p>
+                <h2 className="text-lg font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Choose your association</h2>
+                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>This system hosts many independent associations. Pick yours below — whether you're the chairperson or a secretary.</p>
               </div>
-              <Field label="Association name">
-                <TextInput placeholder="e.g. Umoja Funeral Welfare Association" value={assocInput} onChange={(e) => setAssocInput(e.target.value)} />
-              </Field>
+              {accounts.length > 5 && (
+                <div className="relative">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" color="#98A2B3" />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search by name or account code"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-lg text-sm outline-none"
+                    style={{ border: "1px solid #D0D5DD" }}
+                  />
+                </div>
+              )}
+              {loadingList && (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="rounded-xl p-3 flex items-center gap-3" style={{ border: "1px solid #E4E7EC" }}>
+                      <style>{SKELETON_SHIMMER_CSS}</style>
+                      <SkelCircle size={34} />
+                      <div className="flex-1 space-y-1.5">
+                        <SkelBar w="55%" h={12} />
+                        <SkelBar w="35%" h={10} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!loadingList && listError && <p className="text-sm" style={{ color: "#C23B32" }}>{listError}</p>}
+              {!loadingList && !listError && (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {filteredAccounts.map((a) => (
+                    <button
+                      key={a.code}
+                      onClick={() => selectAccount(a.code)}
+                      disabled={selecting === a.code}
+                      className="w-full rounded-xl p-3 flex items-center gap-3 text-left transition-colors hover:border-[#C89B4C]"
+                      style={{ border: "1px solid #E4E7EC" }}
+                    >
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "#EFF4FB" }}>
+                        <Building2 size={16} color="#2564A8" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold truncate" style={{ color: "#101828" }}>{a.name}</div>
+                        <div className="text-xs" style={{ color: "#98A2B3" }}>{a.code}{a.location ? ` · ${a.location}` : ""}</div>
+                      </div>
+                      <ChevronRight size={16} color={selecting === a.code ? "#C89B4C" : "#98A2B3"} />
+                    </button>
+                  ))}
+                  {filteredAccounts.length === 0 && (
+                    <p className="text-sm text-center py-4" style={{ color: "#98A2B3" }}>
+                      {accounts.length === 0 ? "No associations are registered yet." : "No association matches that search."}
+                    </p>
+                  )}
+                </div>
+              )}
               {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
-              <PrimaryButton full icon={ArrowRight} onClick={submitAssoc}>Continue</PrimaryButton>
             </>
           )}
 
           {step === "role" && (
             <>
-              <button onClick={() => { setStep("assoc"); setError(""); }} className="text-xs flex items-center gap-1" style={{ color: "#5B6472" }}><ChevronLeft size={14} /> Back</button>
+              <button onClick={() => { setStep("assoc"); setFoundAssoc(null); setError(""); }} className="text-xs flex items-center gap-1" style={{ color: "#5B6472" }}><ChevronLeft size={14} /> Search a different association</button>
               <div>
                 <h2 className="text-lg font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Who are you?</h2>
-                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>{assocInput} — choose your role to continue.</p>
+                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>{foundAssoc.name} — choose your role to continue.</p>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <button onClick={() => { setRole("Chairperson"); setStep("credentials"); }} className="rounded-xl p-5 flex flex-col items-center gap-2 border transition-colors hover:border-[#C89B4C]" style={{ borderColor: "#E4E7EC" }}>
@@ -558,7 +941,7 @@ function SignIn({ assocName, regions, onSignIn, onResetSetup }) {
               <button onClick={() => { setStep("role"); setError(""); }} className="text-xs flex items-center gap-1" style={{ color: "#5B6472" }}><ChevronLeft size={14} /> Change role</button>
               <div>
                 <h2 className="text-lg font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Chairperson sign-in</h2>
-                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Signing in to <span className="font-medium" style={{ color: "#101828" }}>{assocInput}</span>. Enter the password created during association setup.</p>
+                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Signing in to <span className="font-medium" style={{ color: "#101828" }}>{foundAssoc.name}</span>. Enter the password created during association setup.</p>
               </div>
               <Field label="Chairperson password">
                 <div className="relative">
@@ -578,25 +961,30 @@ function SignIn({ assocName, regions, onSignIn, onResetSetup }) {
               <button onClick={() => { setStep("role"); setError(""); }} className="text-xs flex items-center gap-1" style={{ color: "#5B6472" }}><ChevronLeft size={14} /> Change role</button>
               <div>
                 <h2 className="text-lg font-bold" style={{ fontFamily: "Fraunces", color: "#101828" }}>Secretary sign-in</h2>
-                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Signing in to <span className="font-medium" style={{ color: "#101828" }}>{assocInput}</span>. Select your region and enter your access code.</p>
+                <p className="text-sm mt-1" style={{ color: "#5B6472" }}>Signing in to <span className="font-medium" style={{ color: "#101828" }}>{foundAssoc.name}</span>. Select your region and enter the password your chairperson gave you.</p>
               </div>
               <Field label="Region">
                 <Select value={regionCode} onChange={(e) => setRegionCode(e.target.value)}>
-                  {regions.map((r) => <option key={r.code} value={r.code}>{r.name} ({r.code})</option>)}
+                  {foundAssoc.regions.map((r) => <option key={r.code} value={r.code}>{r.name} ({r.code})</option>)}
                 </Select>
               </Field>
-              <Field label="Secretary / region code">
-                <TextInput placeholder="e.g. NAI-2026" value={secret} onChange={(e) => setSecret(e.target.value)} />
+              <Field label="Region password">
+                <div className="relative">
+                  <TextInput type={showPw ? "text" : "password"} placeholder="Set by your chairperson" value={secret} onChange={(e) => setSecret(e.target.value)} />
+                  <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-3 top-1/2 -translate-y-1/2">
+                    {showPw ? <EyeOff size={16} color="#98A2B3" /> : <Eye size={16} color="#98A2B3" />}
+                  </button>
+                </div>
               </Field>
               {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
               <PrimaryButton full icon={ArrowRight} onClick={submit} disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}</PrimaryButton>
             </>
           )}
         </Card>
-        <p className="text-center text-xs mt-5" style={{ color: "#98A2B3" }}>Prototype demo — any password/code is accepted once the association name matches.</p>
-        {onResetSetup && (
-          <p className="text-center text-xs mt-2">
-            <button onClick={onResetSetup} className="underline" style={{ color: "#98A2B3" }}>Not your association? Run setup again</button>
+        {onSwitchToSignup && (
+          <p className="text-center text-sm mt-5">
+            <span style={{ color: "#5B6472" }}>Don't have an account? </span>
+            <button onClick={onSwitchToSignup} className="underline font-semibold" style={{ color: "#101828" }}>Create one</button>
           </p>
         )}
       </div>
@@ -615,7 +1003,9 @@ function Sidebar({ role, active, setActive, assocName, regionLabel, onLogout }) 
     { key: "payments", label: "Payments", icon: CreditCard },
     { key: "transactions", label: "Transactions", icon: Receipt },
     { key: "unpaid", label: "Unpaid Members", icon: AlertTriangle },
+    { key: "schedule", label: "Contribution Schedule", icon: Calendar },
     { key: "funerals", label: "Funerals", icon: Heart },
+    { key: "projects", label: "Projects", icon: Building2 },
     { key: "reports", label: "Reports", icon: FileText },
     { key: "region", label: "Region", icon: MapPin },
     { key: "settings", label: "Settings", icon: Settings },
@@ -625,6 +1015,8 @@ function Sidebar({ role, active, setActive, assocName, regionLabel, onLogout }) 
     { key: "regions", label: "Regions", icon: MapPin },
     { key: "members", label: "Members", icon: Users },
     { key: "transactions", label: "Transactions", icon: Receipt },
+    { key: "schedule", label: "Contribution Schedule", icon: Calendar },
+    { key: "projects", label: "Projects", icon: Building2 },
     { key: "financial", label: "Financial Reports", icon: TrendingUp },
     { key: "funeralReports", label: "Funeral Reports", icon: Heart },
     { key: "audit", label: "Activity / Audit Log", icon: Shield },
@@ -670,6 +1062,7 @@ function BottomNav({ role, active, setActive }) {
     { key: "dashboard", label: "Dashboard", icon: Activity },
     { key: isChair ? "regions" : "region", label: isChair ? "Regions" : "Region", icon: MapPin },
     { key: "members", label: "Members", icon: Users },
+    { key: "projects", label: "Projects", icon: Building2 },
     { key: "transactions", label: "Transactions", icon: Receipt },
   ];
   return (
@@ -683,8 +1076,8 @@ function BottomNav({ role, active, setActive }) {
             className="flex-1 flex flex-col items-center gap-1 py-2.5"
             style={{ color: isActive ? "#C89B4C" : "#9AA6B8" }}
           >
-            <item.icon size={20} />
-            <span className="text-[11px] font-medium">{item.label}</span>
+            <item.icon size={18} />
+            <span className="text-[10px] font-medium">{item.label}</span>
           </button>
         );
       })}
@@ -1147,11 +1540,14 @@ function TransactionsPage({ data, regions, scopeRegion, initialRegion, initialTy
 /* ============================================================
    UNPAID MEMBERS PAGE
 ============================================================ */
-function UnpaidPage({ data, regions, scopeRegion, goto }) {
+function UnpaidPage({ data, regions, scopeRegion, goto, currentPeriod }) {
   const list = data.members.filter((m) => m.status === "Active" && !m.paidThisMonth && (scopeRegion ? m.region === scopeRegion : true));
+  const subtitle = currentPeriod
+    ? `Active members who haven't contributed for the collection due ${fmtDate(currentPeriod.due.date)}`
+    : "No contribution schedule is set up yet — showing members with no payment recorded so far. Set up a schedule to track this by due date.";
   return (
     <div>
-      <TopBar title="Unpaid Members" subtitle="Active members with no recorded contribution this month" />
+      <TopBar title="Unpaid Members" subtitle={subtitle} right={!currentPeriod ? <GhostButton icon={Calendar} onClick={() => goto("schedule")}>Set up schedule</GhostButton> : null} />
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -1169,13 +1565,13 @@ function UnpaidPage({ data, regions, scopeRegion, goto }) {
                 <td className="px-4 py-3" style={{ color: "#101828" }}>{m.fullName}</td>
                 <td className="px-4 py-3" style={{ color: "#5B6472" }}>{m.phone}</td>
                 <td className="px-4 py-3" style={{ color: "#5B6472" }}>{regions.find((r) => r.code === m.region)?.name}</td>
-                <td className="px-4 py-3 font-semibold" style={{ color: "#C23B32" }}>{money(m.monthly)}</td>
+                <td className="px-4 py-3 font-semibold" style={{ color: "#C23B32" }}>{money(currentPeriod?.due.expectedAmount ?? m.monthly)}</td>
                 <td className="px-4 py-3"><StatusPill status="Unpaid" /></td>
                 <td className="px-4 py-3"><button onClick={() => goto("payments")} className="text-xs font-semibold" style={{ color: "#C89B4C" }}>Record payment</button></td>
               </tr>
             ))}
             {list.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm" style={{ color: "#98A2B3" }}>Everyone is up to date this month.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm" style={{ color: "#98A2B3" }}>Everyone is up to date{currentPeriod ? " for this period" : ""}.</td></tr>
             )}
           </tbody>
         </table>
@@ -1289,6 +1685,382 @@ function FuneralsPage({ data, regions, scopeRegion, onRecordDeath, onAddExpense 
               setShowExpense(null); setExpDesc(""); setExpAmount("");
             }}>Add expense</PrimaryButton>
           </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const NTH_LABELS = { 1: "1st", 2: "2nd", 3: "3rd", 4: "4th", "-1": "Last" };
+
+function ScheduleDateForm({ initial, onCancel, onSubmit }) {
+  const [date, setDate] = useState(initial?.date || "");
+  const [label, setLabel] = useState(initial?.label || "");
+  const [expectedAmount, setExpectedAmount] = useState(initial?.expectedAmount ? String(initial.expectedAmount) : "");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (!date) { setError("Pick a collection date."); return; }
+    if (!expectedAmount || Number(expectedAmount) <= 0) { setError("Set the expected contribution amount."); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      await onSubmit({ date, label, expectedAmount: Number(expectedAmount) });
+    } catch (e) {
+      setError(e.message || "Could not save this date.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Field label="Collection date">
+        <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+      </Field>
+      <Field label="Label" hint="Optional — e.g. “Monthly contribution”">
+        <TextInput placeholder="Monthly contribution" value={label} onChange={(e) => setLabel(e.target.value)} />
+      </Field>
+      <Field label="Expected contribution (KES)">
+        <TextInput type="number" placeholder="500" value={expectedAmount} onChange={(e) => setExpectedAmount(e.target.value)} />
+      </Field>
+      {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
+      <div className="flex gap-3 justify-end pt-1">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <PrimaryButton onClick={submit} disabled={submitting}>{submitting ? "Saving…" : initial ? "Save changes" : "Add date"}</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function GenerateYearForm({ onCancel, onSubmit }) {
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(String(thisYear));
+  const [weekday, setWeekday] = useState("0");
+  const [nth, setNth] = useState("1");
+  const [expectedAmount, setExpectedAmount] = useState("");
+  const [label, setLabel] = useState("Monthly contribution");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const preview = useMemo(() => {
+    try {
+      return nthWeekdayOfMonth(Number(year), new Date().getMonth(), Number(weekday), Number(nth));
+    } catch { return ""; }
+  }, [year, weekday, nth]);
+
+  const submit = async () => {
+    if (!expectedAmount || Number(expectedAmount) <= 0) { setError("Set the expected contribution amount."); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      await onSubmit({ year, weekday, nth, expectedAmount: Number(expectedAmount), label });
+    } catch (e) {
+      setError(e.message || "Could not generate the schedule.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm" style={{ color: "#5B6472" }}>Creates one collection date per month for the whole year — e.g. the 1st Sunday of every month.</p>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Which week">
+          <Select value={nth} onChange={(e) => setNth(e.target.value)}>
+            {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{NTH_LABELS[n]}</option>)}
+            <option value="-1">Last</option>
+          </Select>
+        </Field>
+        <Field label="Weekday">
+          <Select value={weekday} onChange={(e) => setWeekday(e.target.value)}>
+            {WEEKDAY_NAMES.map((w, i) => <option key={i} value={i}>{w}</option>)}
+          </Select>
+        </Field>
+        <Field label="Year">
+          <TextInput type="number" value={year} onChange={(e) => setYear(e.target.value)} />
+        </Field>
+      </div>
+      <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "#F4F6F8", color: "#5B6472" }}>
+        e.g. this month's date would land on <span className="font-semibold" style={{ color: "#101828" }}>{fmtDate(preview)}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Expected contribution (KES)">
+          <TextInput type="number" placeholder="500" value={expectedAmount} onChange={(e) => setExpectedAmount(e.target.value)} />
+        </Field>
+        <Field label="Label" hint="Optional">
+          <TextInput value={label} onChange={(e) => setLabel(e.target.value)} />
+        </Field>
+      </div>
+      {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
+      <div className="flex gap-3 justify-end pt-1">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <PrimaryButton onClick={submit} disabled={submitting}>{submitting ? "Generating…" : "Generate 12 dates"}</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function SchedulePage({ data, canManage, onAddDate, onUpdateDate, onDeleteDate, onGenerateYear }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [showGenerate, setShowGenerate] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const todayStr = today();
+  const schedule = (data.schedule || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  const nextUp = schedule.find((s) => s.date > todayStr);
+  const mostRecentDue = [...schedule].filter((s) => s.date <= todayStr).pop();
+
+  return (
+    <div>
+      <TopBar
+        title="Contribution Schedule"
+        subtitle="The dates members are expected to contribute by. Once a date passes, unpaid members are flagged automatically."
+        right={canManage ? (
+          <div className="flex gap-2">
+            <GhostButton icon={Calendar} onClick={() => setShowGenerate(true)}>Generate for a year</GhostButton>
+            <PrimaryButton icon={Plus} onClick={() => setShowAdd(true)}>Add date</PrimaryButton>
+          </div>
+        ) : null}
+      />
+
+      <div className="flex flex-wrap gap-4 mb-6">
+        <StatCard icon={AlertTriangle} label="Most Recently Due" value={mostRecentDue ? fmtDate(mostRecentDue.date) : "—"} sub={mostRecentDue ? `KES ${mostRecentDue.expectedAmount.toLocaleString()} expected` : "No dates have passed yet"} tint="#C97A21" />
+        <StatCard icon={Calendar} label="Next Collection" value={nextUp ? fmtDate(nextUp.date) : "—"} sub={nextUp ? `KES ${nextUp.expectedAmount.toLocaleString()} expected` : "None scheduled"} tint="#2564A8" />
+      </div>
+
+      <Card className="overflow-hidden">
+        <div className="px-5 py-4" style={{ borderBottom: "1px solid #F0F1F3" }}>
+          <h3 className="font-semibold" style={{ color: "#101828" }}>All collection dates</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: "#F9FAFB" }}>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Date</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Label</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Expected</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Status</th>
+              {canManage && <th className="text-right px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {schedule.map((s) => {
+              const passed = s.date <= todayStr;
+              return (
+                <tr key={s.id} style={{ borderTop: "1px solid #F0F1F3" }}>
+                  <td className="px-5 py-3 font-medium" style={{ color: "#101828" }}>{fmtDate(s.date)}</td>
+                  <td className="px-5 py-3" style={{ color: "#5B6472" }}>{s.label || "—"}</td>
+                  <td className="px-5 py-3" style={{ color: "#101828" }}>{money(s.expectedAmount)}</td>
+                  <td className="px-5 py-3">
+                    <StatusPill status={passed ? (s.date === mostRecentDue?.date ? "Unpaid" : "Completed") : "Planned"} />
+                    <span className="ml-1.5 text-xs" style={{ color: "#98A2B3" }}>{passed ? "Past due" : "Upcoming"}</span>
+                  </td>
+                  {canManage && (
+                    <td className="px-5 py-3 text-right">
+                      <button onClick={() => setEditing(s)} className="text-xs font-semibold mr-3" style={{ color: "#2564A8" }}>Edit</button>
+                      <button onClick={() => onDeleteDate(s.id)} className="text-xs font-semibold" style={{ color: "#C23B32" }}>Remove</button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+            {schedule.length === 0 && (
+              <tr><td colSpan={canManage ? 5 : 4} className="px-5 py-8 text-center text-sm" style={{ color: "#98A2B3" }}>
+                {canManage ? "No collection dates yet — generate a year of them, or add one manually." : "No collection dates have been set yet."}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {showAdd && (
+        <Modal title="Add collection date" onClose={() => setShowAdd(false)}>
+          <ScheduleDateForm onCancel={() => setShowAdd(false)} onSubmit={async (form) => { await onAddDate(form); setShowAdd(false); }} />
+        </Modal>
+      )}
+      {editing && (
+        <Modal title="Edit collection date" onClose={() => setEditing(null)}>
+          <ScheduleDateForm initial={editing} onCancel={() => setEditing(null)} onSubmit={async (form) => { await onUpdateDate(editing.id, form); setEditing(null); }} />
+        </Modal>
+      )}
+      {showGenerate && (
+        <Modal title="Generate a year of collection dates" onClose={() => setShowGenerate(false)}>
+          <GenerateYearForm onCancel={() => setShowGenerate(false)} onSubmit={async (form) => { await onGenerateYear(form); setShowGenerate(false); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ProjectForm({ regions, onCancel, onSubmit }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [budget, setBudget] = useState("");
+  const [region, setRegion] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [status, setStatus] = useState("Planned");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim()) { setError("Give the project a name."); return; }
+    if (!description.trim()) { setError("Describe what this project is for — members will see this."); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      await onSubmit({ name: name.trim(), description: description.trim(), budget, status, startDate, region });
+    } catch (e) {
+      setError(e.message || "Could not save project.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Field label="Project name">
+        <TextInput placeholder="e.g. Nairobi borehole" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="What is this project for?" hint="A short explanation members will see — the purpose, and what it funds">
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="e.g. Drilling and equipping a shared borehole to reduce members' water costs."
+          rows={3}
+          className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
+          style={{ border: "1px solid #D0D5DD", color: "#101828" }}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Budget (KES)">
+          <TextInput type="number" placeholder="0" value={budget} onChange={(e) => setBudget(e.target.value)} />
+        </Field>
+        <Field label="Status">
+          <Select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="Planned">Planned</option>
+            <option value="Ongoing">Ongoing</option>
+            <option value="Completed">Completed</option>
+          </Select>
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Region" hint="Optional — leave blank if it benefits everyone">
+          <Select value={region} onChange={(e) => setRegion(e.target.value)}>
+            <option value="">All regions</option>
+            {regions.map((r) => <option key={r.code} value={r.code}>{r.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Start date">
+          <TextInput type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        </Field>
+      </div>
+      {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
+      <div className="flex gap-3 justify-end pt-1">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <PrimaryButton onClick={submit} disabled={submitting}>{submitting ? "Saving…" : "Add project"}</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function ProjectsPage({ data, regions, scopeRegion, canManage, onAddProject, onUpdateProjectStatus }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const projects = (data.projects || []).filter((p) => !scopeRegion || !p.region || p.region === scopeRegion);
+  const totalBudget = projects.reduce((s, p) => s + p.budget, 0);
+  const totalSpent = projects.reduce((s, p) => s + p.spent, 0);
+  const regionName = (code) => regions.find((r) => r.code === code)?.name;
+
+  return (
+    <div>
+      <TopBar
+        title="Projects"
+        subtitle="Community and development initiatives the association is funding — separate from welfare contributions and funeral cases"
+        right={canManage ? <PrimaryButton icon={Plus} onClick={() => setShowAdd(true)}>New project</PrimaryButton> : null}
+      />
+
+      <div className="flex flex-wrap gap-4 mb-6">
+        <StatCard icon={Building2} label="Active Projects" value={projects.length} tint="#2564A8" />
+        <StatCard icon={Banknote} label="Total Budgeted" value={money(totalBudget)} tint="#178A4C" />
+        <StatCard icon={Receipt} label="Total Spent" value={money(totalSpent)} tint="#C97A21" />
+      </div>
+
+      <Card className="overflow-hidden">
+        <div className="px-5 py-4" style={{ borderBottom: "1px solid #F0F1F3" }}>
+          <h3 className="font-semibold" style={{ color: "#101828" }}>All projects</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: "#F9FAFB" }}>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Project</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Region</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Budget</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Spent</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Status</th>
+              <th className="text-left px-5 py-2.5 font-medium" style={{ color: "#98A2B3" }}>Started</th>
+            </tr>
+          </thead>
+          <tbody>
+            {projects.map((p) => (
+              <Fragment key={p.id}>
+                <tr
+                  className="cursor-pointer hover:bg-gray-50"
+                  style={{ borderTop: "1px solid #F0F1F3" }}
+                  onClick={() => setExpanded(expanded === p.id ? null : p.id)}
+                >
+                  <td className="px-5 py-3">
+                    <div className="flex items-center gap-2 font-medium" style={{ color: "#101828" }}>
+                      <ChevronRight size={14} style={{ transform: expanded === p.id ? "rotate(90deg)" : "none", transition: "transform .15s" }} color="#98A2B3" />
+                      {p.name}
+                    </div>
+                  </td>
+                  <td className="px-5 py-3" style={{ color: "#5B6472" }}>{p.region ? regionName(p.region) : "All regions"}</td>
+                  <td className="px-5 py-3" style={{ color: "#101828" }}>{money(p.budget)}</td>
+                  <td className="px-5 py-3" style={{ color: "#5B6472" }}>{money(p.spent)}</td>
+                  <td className="px-5 py-3">
+                    {canManage ? (
+                      <select
+                        value={p.status}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => onUpdateProjectStatus(p.id, e.target.value)}
+                        className="text-xs font-semibold rounded-full px-2.5 py-1 outline-none"
+                        style={{ border: "1px solid #E4E7EC", color: "#101828" }}
+                      >
+                        <option value="Planned">Planned</option>
+                        <option value="Ongoing">Ongoing</option>
+                        <option value="Completed">Completed</option>
+                      </select>
+                    ) : (
+                      <StatusPill status={p.status} />
+                    )}
+                  </td>
+                  <td className="px-5 py-3" style={{ color: "#5B6472" }}>{fmtDate(p.startDate)}</td>
+                </tr>
+                {expanded === p.id && (
+                  <tr style={{ borderTop: "1px solid #F0F1F3", background: "#F9FAFB" }}>
+                    <td colSpan={6} className="px-5 py-4">
+                      <div className="text-xs uppercase tracking-wide mb-1" style={{ color: "#98A2B3" }}>What this is for</div>
+                      <p className="text-sm" style={{ color: "#344054" }}>{p.description}</p>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+            {projects.length === 0 && (
+              <tr><td colSpan={6} className="px-5 py-8 text-center text-sm" style={{ color: "#98A2B3" }}>No projects yet{canManage ? " — start one to track a shared initiative." : "."}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {showAdd && (
+        <Modal title="New project" onClose={() => setShowAdd(false)}>
+          <ProjectForm
+            regions={regions}
+            onCancel={() => setShowAdd(false)}
+            onSubmit={async (form) => { await onAddProject(form); setShowAdd(false); }}
+          />
         </Modal>
       )}
     </div>
@@ -1436,8 +2208,64 @@ function ChairDashboard({ data, regions, goto }) {
 /* ============================================================
    CHAIRPERSON: REGIONS PAGE
 ============================================================ */
-function RegionsPage({ data, regions, goto }) {
+function RegionForm({ initial, existingCodes, onCancel, onSubmit }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [code, setCode] = useState(initial?.code || "");
+  const [password, setPassword] = useState(initial?.password || "");
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const isEdit = !!initial;
+
+  const submit = async () => {
+    if (!name.trim()) { setError("Region name is required."); return; }
+    if (!code.trim()) { setError("Region code is required."); return; }
+    if (!password.trim()) { setError("Set a password the secretary will sign in with."); return; }
+    const normalized = code.trim().toUpperCase();
+    const clashes = existingCodes.some((c) => c.code === normalized && c.code !== initial?.code);
+    if (clashes) { setError("That code is already used by another region."); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      await onSubmit({ name: name.trim(), code: normalized, password: password.trim() });
+    } catch (e) {
+      setError(e.message || "Could not save region.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Field label="Region name">
+        <TextInput placeholder="e.g. Nairobi" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Region code" hint="A short identifier for this region — shown in lists and reports">
+        <TextInput placeholder="e.g. NRB" maxLength={5} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+      </Field>
+      <Field label="Secretary password" hint="You set this — give it to the region's secretary. They'll enter it, alongside choosing this region, to sign in.">
+        <div className="relative">
+          <TextInput type={showPw ? "text" : "password"} placeholder="e.g. a memorable phrase or code" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-3 top-1/2 -translate-y-1/2">
+            {showPw ? <EyeOff size={16} color="#98A2B3" /> : <Eye size={16} color="#98A2B3" />}
+          </button>
+        </div>
+      </Field>
+      {error && <p className="text-sm" style={{ color: "#C23B32" }}>{error}</p>}
+      <div className="flex gap-3 justify-end pt-1">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <PrimaryButton onClick={submit} disabled={submitting}>{submitting ? "Saving…" : isEdit ? "Save changes" : "Add region"}</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function RegionsPage({ data, regions, goto, onAddRegion, onUpdateRegion, onDeleteRegion }) {
   const [selected, setSelected] = useState("All");
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingRegion, setEditingRegion] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
   const scoped = selected === "All" ? null : selected;
   const members = data.members.filter((m) => !scoped || m.region === scoped);
   const active = members.filter((m) => m.status === "Active");
@@ -1445,6 +2273,19 @@ function RegionsPage({ data, regions, goto }) {
   const expenses = data.transactions.filter((t) => (!scoped || t.region === scoped) && t.type === "Expense").reduce((s, t) => s + t.amount, 0);
   const funerals = data.funerals.filter((f) => !scoped || f.region === scoped);
   const scopedTx = data.transactions.filter((t) => !scoped || t.region === scoped).slice(-6).reverse();
+  const memberCountByRegion = (code) => data.members.filter((m) => m.region === code).length;
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await onDeleteRegion(deleteTarget.code);
+      if (selected === deleteTarget.code) setSelected("All");
+      setDeleteTarget(null);
+      setDeleteError("");
+    } catch (e) {
+      setDeleteError(e.message || "Could not delete region.");
+    }
+  };
 
   return (
     <div>
@@ -1460,6 +2301,66 @@ function RegionsPage({ data, regions, goto }) {
         <StatCard icon={AlertTriangle} label="Unpaid Members" value={active.filter((m) => !m.paidThisMonth).length} tint="#C23B32" onClick={() => goto("unpaid", { region: scoped })} />
         <StatCard icon={Heart} label="Funeral Cases" value={funerals.length} tint="#C97A21" sub={`${money(expenses)} in expenses`} onClick={() => goto("funeralReports", { region: scoped })} />
       </div>
+
+      <Card className="overflow-hidden mb-6">
+        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #F0F1F3" }}>
+          <h3 className="font-semibold" style={{ color: "#101828" }}>Manage regions</h3>
+          <PrimaryButton icon={Plus} onClick={() => setShowAdd(true)}>Add region</PrimaryButton>
+        </div>
+        <div className="divide-y" style={{ borderColor: "#F0F1F3" }}>
+          {regions.map((r) => (
+            <div key={r.code} className="flex items-center justify-between px-5 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "#E8F0FA" }}>
+                  <MapPin size={15} color="#2564A8" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium" style={{ color: "#101828" }}>{r.name}</div>
+                  <div className="text-xs" style={{ color: "#98A2B3" }}>{r.code} · {memberCountByRegion(r.code)} member{memberCountByRegion(r.code) === 1 ? "" : "s"}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setEditingRegion(r)} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-gray-50" style={{ border: "1px solid #E4E7EC", color: "#101828" }}>Edit</button>
+                <button onClick={() => { setDeleteTarget(r); setDeleteError(""); }} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50" style={{ border: "1px solid #E4E7EC", color: "#C23B32" }}>Delete</button>
+              </div>
+            </div>
+          ))}
+          {regions.length === 0 && <div className="px-5 py-6 text-sm text-center" style={{ color: "#98A2B3" }}>No regions yet — add one to get started.</div>}
+        </div>
+      </Card>
+
+      {showAdd && (
+        <Modal title="Add region" onClose={() => setShowAdd(false)}>
+          <RegionForm
+            existingCodes={regions}
+            onCancel={() => setShowAdd(false)}
+            onSubmit={async (form) => { await onAddRegion(form); setShowAdd(false); }}
+          />
+        </Modal>
+      )}
+
+      {editingRegion && (
+        <Modal title="Edit region" onClose={() => setEditingRegion(null)}>
+          <RegionForm
+            initial={editingRegion}
+            existingCodes={regions}
+            onCancel={() => setEditingRegion(null)}
+            onSubmit={async (form) => { await onUpdateRegion(editingRegion.code, form); setEditingRegion(null); }}
+          />
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete region"
+          body={deleteError || `Delete "${deleteTarget.name}" (${deleteTarget.code})? This can't be undone. Regions with existing members can't be deleted — move or remove those members first.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={confirmDelete}
+          onCancel={() => { setDeleteTarget(null); setDeleteError(""); }}
+        />
+      )}
+
       <Card className="overflow-hidden">
         <div className="px-5 py-4" style={{ borderBottom: "1px solid #F0F1F3" }}><h3 className="font-semibold" style={{ color: "#101828" }}>Recent transactions {scoped ? `— ${regions.find(r=>r.code===scoped)?.name}` : "— all regions"}</h3></div>
         <table className="w-full text-sm">
@@ -1568,7 +2469,7 @@ function FuneralReportsPage({ data, regions, initialRegion }) {
   );
 }
 
-function TopMenuButton({ onOpenSettings, onLogout }) {
+function TopMenuButton({ onOpenSettings, onOpenSchedule, onLogout }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -1583,7 +2484,10 @@ function TopMenuButton({ onOpenSettings, onLogout }) {
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white z-20 py-1.5" style={{ border: "1px solid #E4E7EC", boxShadow: "0 8px 24px rgba(16,24,40,0.12)" }}>
+          <div className="absolute right-0 mt-2 w-52 rounded-xl bg-white z-20 py-1.5" style={{ border: "1px solid #E4E7EC", boxShadow: "0 8px 24px rgba(16,24,40,0.12)" }}>
+            <button onClick={() => { setOpen(false); onOpenSchedule(); }} className="md:hidden w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left hover:bg-gray-50" style={{ color: "#101828" }}>
+              <Calendar size={16} color="#5B6472" /> Contribution Schedule
+            </button>
             <button onClick={() => { setOpen(false); onOpenSettings(); }} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left hover:bg-gray-50" style={{ color: "#101828" }}>
               <Settings size={16} color="#5B6472" /> Settings
             </button>
@@ -1601,46 +2505,33 @@ function TopMenuButton({ onOpenSettings, onLogout }) {
    ROOT APP
 ============================================================ */
 export default function App() {
-  const [phase, setPhase] = useState("loading"); // loading -> onboarding -> signin -> app
-  const [assoc, setAssoc] = useState(null);
-  const [regions, setRegions] = useState(DEFAULT_REGIONS);
-  const [session, setSession] = useState(null);
+  const [phase, setPhase] = useState("loading"); // loading -> welcome -> onboarding|signin -> app
+  const [signinPrefill, setSigninPrefill] = useState(null); // {code, name} just after registering
+  const [session, setSession] = useState(null); // {role, regionCode, associationCode, assocName, regions}
   const [screen, setScreen] = useState("dashboard");
-  const [data, setData] = useState({ members: [], transactions: [], funerals: [], auditLog: [] });
+  const [data, setData] = useState({ members: [], transactions: [], funerals: [], auditLog: [], projects: [], schedule: [] });
   const [loadError, setLoadError] = useState("");
+  const [dataLoading, setDataLoading] = useState(false);
 
-  const refreshData = async () => {
+  const refreshData = async (session) => {
+    setDataLoading(true);
     try {
-      const fresh = await loadAllData();
+      const fresh = await loadAllData(session.associationCode);
       setData(fresh);
       setLoadError("");
     } catch (e) {
       setLoadError(e.message || "Could not reach the server.");
+    } finally {
+      setDataLoading(false);
     }
   };
 
-  // On load, ask the backend whether this association has already
-  // completed onboarding. If so, skip straight to sign-in.
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const status = await api.getSetupStatus();
-        if (cancelled) return;
-        if (status && status.setup) {
-          setAssoc(status.association);
-          setRegions(status.regions);
-          await refreshData();
-          setPhase("signin");
-        } else {
-          setPhase("onboarding");
-        }
-      } catch (e) {
-        setLoadError(e.message || "Could not reach the server.");
-        setPhase("onboarding");
-      }
-    })();
-    return () => { cancelled = true; };
+  // This is a general, multi-tenant app — many different associations each
+  // have their own private account here, so there's nothing global to check
+  // on boot. Just a brief simulated boot flash for a smooth first paint.
+  useEffect(() => {
+    const t = setTimeout(() => setPhase("welcome"), 350);
+    return () => clearTimeout(t);
   }, []);
 
   const handleOnboardingComplete = async ({ assoc, regions, chairPassword }) => {
@@ -1651,21 +2542,19 @@ export default function App() {
       chairPassword,
       regions,
     });
-    setAssoc(result.association);
-    setRegions(result.regions);
-    await refreshData();
-    setPhase("signin");
+    return result; // { code, association, regions } — Onboarding shows the code
   };
 
-  const handleSignIn = async (session) => {
-    setSession(session);
+  const handleSignIn = async (newSession) => {
+    setSession(newSession);
     setScreen("dashboard");
-    await refreshData();
+    await refreshData(newSession);
     setPhase("app");
   };
 
   const handleLogout = () => {
     setSession(null);
+    setSigninPrefill(null);
     setPhase("signin");
     setScreen("dashboard");
   };
@@ -1678,37 +2567,127 @@ export default function App() {
     setScreen(screen);
   };
 
+  // Contribution compliance: find the most recently *passed* schedule date
+  // and the one before it, then check — per member — whether a payment
+  // landed inside that window. This is what "who hasn't contributed"
+  // actually means once a due date has come and gone, replacing the old
+  // always-on "paidThisMonth" flag with something date-aware.
+  const currentPeriod = useMemo(() => {
+    const schedule = (data.schedule || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+    const todayStr = today();
+    const passed = schedule.filter((s) => s.date <= todayStr);
+    if (passed.length === 0) return null;
+    const due = passed[passed.length - 1];
+    const previous = passed.length > 1 ? passed[passed.length - 2] : null;
+    const next = schedule.find((s) => s.date > todayStr) || null;
+    return { due, previous, next };
+  }, [data.schedule]);
+
+  const displayData = useMemo(() => {
+    if (!currentPeriod) return data; // no schedule set up yet — fall back to raw data
+    const { due, previous } = currentPeriod;
+    const members = data.members.map((m) => {
+      if (m.status !== "Active") return m;
+      const paid = data.transactions.some((t) =>
+        t.type === "Payment" && t.memberId === m.nationalId &&
+        t.date <= due.date && (!previous || t.date > previous.date)
+      );
+      return { ...m, paidThisMonth: paid };
+    });
+    return { ...data, members };
+  }, [data, currentPeriod]);
+
+  const addRegion = async (form) => {
+    await api.addRegion(session.associationCode, form);
+    const fresh = await api.listRegions(session.associationCode);
+    setSession((s) => ({ ...s, regions: fresh }));
+  };
+
+  const updateRegion = async (code, form) => {
+    await api.updateRegion(session.associationCode, code, form);
+    const fresh = await api.listRegions(session.associationCode);
+    setSession((s) => ({ ...s, regions: fresh }));
+    await refreshData(session);
+  };
+
+  const deleteRegion = async (code) => {
+    await api.deleteRegion(session.associationCode, code);
+    const fresh = await api.listRegions(session.associationCode);
+    setSession((s) => ({ ...s, regions: fresh }));
+  };
+
   const addMember = async (form) => {
-    await api.addMember(form);
-    await refreshData();
+    await api.addMember(session.associationCode, form);
+    await refreshData(session);
   };
 
   const addPayment = async ({ member, amount, reference }) => {
-    await api.addPayment({ memberId: member.id, amount: Number(amount), reference: reference || "MANUAL" });
-    await refreshData();
+    await api.addPayment(session.associationCode, { memberId: member.id, amount: Number(amount), reference: reference || "MANUAL" });
+    await refreshData(session);
   };
 
   const recordDeath = async ({ member, dateOfDeath, allocated, notes }) => {
-    await api.recordDeath({ memberId: member.id, dateOfDeath, allocated: Number(allocated), notes });
-    await refreshData();
+    await api.recordDeath(session.associationCode, { memberId: member.id, dateOfDeath, allocated: Number(allocated), notes });
+    await refreshData(session);
   };
 
   const addExpense = async (funeralId, { description, amount }) => {
-    await api.addFuneralExpense(funeralId, { description, amount: Number(amount) });
-    await refreshData();
+    await api.addFuneralExpense(session.associationCode, funeralId, { description, amount: Number(amount) });
+    await refreshData(session);
+  };
+
+  const addProject = async (form) => {
+    await api.addProject(session.associationCode, form);
+    await refreshData(session);
+  };
+
+  const updateProjectStatus = async (projectId, status) => {
+    await api.updateProjectStatus(session.associationCode, projectId, status);
+    await refreshData(session);
+  };
+
+  const addScheduleDate = async (form) => {
+    await api.addScheduleDate(session.associationCode, form);
+    await refreshData(session);
+  };
+
+  const updateScheduleDate = async (id, form) => {
+    await api.updateScheduleDate(session.associationCode, id, form);
+    await refreshData(session);
+  };
+
+  const deleteScheduleDate = async (id) => {
+    await api.deleteScheduleDate(session.associationCode, id);
+    await refreshData(session);
+  };
+
+  const generateYearSchedule = async (form) => {
+    await api.generateYearSchedule(session.associationCode, form);
+    await refreshData(session);
   };
 
   if (phase === "loading") {
+    if (loadError) {
+      return (
+        <>
+          <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; }`}</style>
+          <div className="min-h-screen flex items-center justify-center" style={{ background: "#F4F6F8" }}>
+            <div className="flex flex-col items-center gap-3">
+              <HarambeeMark size={40} />
+              <span className="text-xs max-w-xs text-center" style={{ color: "#C23B32" }}>{loadError}</span>
+            </div>
+          </div>
+        </>
+      );
+    }
+    return <AppShellSkeleton />;
+  }
+
+  if (phase === "welcome") {
     return (
       <>
-        <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; }`}</style>
-        <div className="min-h-screen flex items-center justify-center" style={{ background: "#F4F6F8" }}>
-          <div className="flex flex-col items-center gap-3">
-            <HarambeeMark size={40} />
-            <span className="text-sm" style={{ color: "#98A2B3" }}>Loading…</span>
-            {loadError && <span className="text-xs max-w-xs text-center" style={{ color: "#C23B32" }}>{loadError}</span>}
-          </div>
-        </div>
+        <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; } h1,h2,h3,.font-fraunces{font-family:'Fraunces',serif;}`}</style>
+        <Welcome onSelectLogin={() => setPhase("signin")} onSelectSignup={() => setPhase("onboarding")} />
       </>
     );
   }
@@ -1717,7 +2696,13 @@ export default function App() {
     return (
       <>
         <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; } h1,h2,h3,.font-fraunces{font-family:'Fraunces',serif;}`}</style>
-        <Onboarding onComplete={handleOnboardingComplete} />
+        <Onboarding
+          onComplete={handleOnboardingComplete}
+          onSwitchToLogin={(createdAccount) => {
+            if (createdAccount && createdAccount.code) setSigninPrefill({ code: createdAccount.code, name: createdAccount.association.name });
+            setPhase("signin");
+          }}
+        />
       </>
     );
   }
@@ -1726,47 +2711,52 @@ export default function App() {
     return (
       <>
         <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; }`}</style>
-        <SignIn assocName={assoc?.name} regions={regions} onSignIn={handleSignIn} onResetSetup={async () => {
-          try { await api.resetSetup(); } catch (e) {}
-          setAssoc(null);
-          setPhase("onboarding");
-        }} />
+        <SignIn
+          prefill={signinPrefill}
+          onSignIn={handleSignIn}
+          onSwitchToSignup={() => { setSigninPrefill(null); setPhase("onboarding"); }}
+        />
       </>
     );
   }
 
   const isChair = session.role === "Chairperson";
+  const regions = session.regions;
   const regionObj = regions.find((r) => r.code === session.regionCode);
   const regionLabel = isChair ? "All Regions · Chairperson" : `${regionObj?.name || ""} · Secretary`;
 
   let content;
   if (isChair) {
     switch (screen) {
-      case "dashboard": content = <ChairDashboard data={data} regions={regions} goto={gotoWithFilter} />; break;
-      case "regions": content = <RegionsPage data={data} regions={regions} goto={gotoWithFilter} />; break;
-      case "members": content = <MembersPage data={data} regions={regions} role="Chairperson" goto={gotoWithFilter} initialRegion={navContext.region} />; break;
-      case "transactions": content = <TransactionsPage data={data} regions={regions} initialRegion={navContext.region} initialType={navContext.type} initialRange={navContext.range} />; break;
-      case "unpaid": content = <UnpaidPage data={data} regions={regions} scopeRegion={navContext.region} goto={gotoWithFilter} />; break;
-      case "financial": content = <FinancialReportsPage data={data} regions={regions} />; break;
-      case "funeralReports": content = <FuneralReportsPage data={data} regions={regions} initialRegion={navContext.region} />; break;
-      case "audit": content = <AuditLogPage data={data} />; break;
-      case "settings": content = <SettingsPage assocName={assoc?.name} role="Chairperson" />; break;
-      default: content = <ChairDashboard data={data} regions={regions} goto={gotoWithFilter} />;
+      case "dashboard": content = <ChairDashboard data={displayData} regions={regions} goto={gotoWithFilter} />; break;
+      case "regions": content = <RegionsPage data={displayData} regions={regions} goto={gotoWithFilter} onAddRegion={addRegion} onUpdateRegion={updateRegion} onDeleteRegion={deleteRegion} />; break;
+      case "members": content = <MembersPage data={displayData} regions={regions} role="Chairperson" goto={gotoWithFilter} initialRegion={navContext.region} />; break;
+      case "transactions": content = <TransactionsPage data={displayData} regions={regions} initialRegion={navContext.region} initialType={navContext.type} initialRange={navContext.range} />; break;
+      case "unpaid": content = <UnpaidPage data={displayData} regions={regions} scopeRegion={navContext.region} goto={gotoWithFilter} currentPeriod={currentPeriod} />; break;
+      case "schedule": content = <SchedulePage data={displayData} canManage onAddDate={addScheduleDate} onUpdateDate={updateScheduleDate} onDeleteDate={deleteScheduleDate} onGenerateYear={generateYearSchedule} />; break;
+      case "financial": content = <FinancialReportsPage data={displayData} regions={regions} />; break;
+      case "funeralReports": content = <FuneralReportsPage data={displayData} regions={regions} initialRegion={navContext.region} />; break;
+      case "projects": content = <ProjectsPage data={displayData} regions={regions} canManage onAddProject={addProject} onUpdateProjectStatus={updateProjectStatus} />; break;
+      case "audit": content = <AuditLogPage data={displayData} />; break;
+      case "settings": content = <SettingsPage assocName={session.assocName} role="Chairperson" />; break;
+      default: content = <ChairDashboard data={displayData} regions={regions} goto={gotoWithFilter} />;
     }
   } else {
     const rc = session.regionCode;
     switch (screen) {
-      case "dashboard": content = <SecretaryDashboard data={data} regionCode={rc} regionName={regionObj?.name} goto={gotoWithFilter} />; break;
-      case "members": content = <MembersPage data={data} regions={regions} scopeRegion={rc} role="Secretary" goto={gotoWithFilter} />; break;
+      case "dashboard": content = <SecretaryDashboard data={displayData} regionCode={rc} regionName={regionObj?.name} goto={gotoWithFilter} />; break;
+      case "members": content = <MembersPage data={displayData} regions={regions} scopeRegion={rc} role="Secretary" goto={gotoWithFilter} />; break;
       case "addMember": content = <AddMemberPage regions={regions} scopeRegion={rc} onAdd={addMember} />; break;
-      case "payments": content = <PaymentsPage data={data} regions={regions} scopeRegion={rc} onAddPayment={addPayment} />; break;
-      case "transactions": content = <TransactionsPage data={data} regions={regions} scopeRegion={rc} initialType={navContext.type} initialRange={navContext.range} />; break;
-      case "unpaid": content = <UnpaidPage data={data} regions={regions} scopeRegion={rc} goto={gotoWithFilter} />; break;
-      case "funerals": content = <FuneralsPage data={data} regions={regions} scopeRegion={rc} onRecordDeath={recordDeath} onAddExpense={addExpense} />; break;
-      case "reports": content = <ReportsPage data={data} regionCode={rc} regionName={regionObj?.name} />; break;
-      case "region": content = <RegionOwnPage data={data} regionCode={rc} regionName={regionObj?.name} />; break;
-      case "settings": content = <SettingsPage assocName={assoc?.name} role="Secretary" regionName={regionObj?.name} />; break;
-      default: content = <SecretaryDashboard data={data} regionCode={rc} regionName={regionObj?.name} goto={gotoWithFilter} />;
+      case "payments": content = <PaymentsPage data={displayData} regions={regions} scopeRegion={rc} onAddPayment={addPayment} />; break;
+      case "transactions": content = <TransactionsPage data={displayData} regions={regions} scopeRegion={rc} initialType={navContext.type} initialRange={navContext.range} />; break;
+      case "unpaid": content = <UnpaidPage data={displayData} regions={regions} scopeRegion={rc} goto={gotoWithFilter} currentPeriod={currentPeriod} />; break;
+      case "schedule": content = <SchedulePage data={displayData} canManage={false} />; break;
+      case "funerals": content = <FuneralsPage data={displayData} regions={regions} scopeRegion={rc} onRecordDeath={recordDeath} onAddExpense={addExpense} />; break;
+      case "projects": content = <ProjectsPage data={displayData} regions={regions} scopeRegion={rc} canManage={false} />; break;
+      case "reports": content = <ReportsPage data={displayData} regionCode={rc} regionName={regionObj?.name} />; break;
+      case "region": content = <RegionOwnPage data={displayData} regionCode={rc} regionName={regionObj?.name} />; break;
+      case "settings": content = <SettingsPage assocName={session.assocName} role="Secretary" regionName={regionObj?.name} />; break;
+      default: content = <SecretaryDashboard data={displayData} regionCode={rc} regionName={regionObj?.name} goto={gotoWithFilter} />;
     }
   }
 
@@ -1774,12 +2764,14 @@ export default function App() {
     <>
       <style>{FONT_IMPORT}{`* { font-family: 'Inter', sans-serif; } h1,h2,h3{font-family:'Fraunces',serif;}`}</style>
       <div className="flex min-h-screen" style={{ background: "#F4F6F8" }}>
-        <Sidebar role={session.role} active={screen} setActive={(s) => gotoWithFilter(s, {})} assocName={assoc?.name || "Chama System"} regionLabel={regionLabel} onLogout={handleLogout} />
+        <Sidebar role={session.role} active={screen} setActive={(s) => gotoWithFilter(s, {})} assocName={session.assocName} regionLabel={regionLabel} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col max-w-[1400px]">
           <div className="flex justify-end px-6 lg:px-8 pt-4">
-            <TopMenuButton onOpenSettings={() => gotoWithFilter("settings", {})} onLogout={handleLogout} />
+            <TopMenuButton onOpenSettings={() => gotoWithFilter("settings", {})} onOpenSchedule={() => gotoWithFilter("schedule", {})} onLogout={handleLogout} />
           </div>
-          <main className="flex-1 px-6 lg:px-8 pb-24 md:pb-8">{content}</main>
+          <main className="flex-1 px-6 lg:px-8 pb-24 md:pb-8">
+            {dataLoading ? <DashboardContentSkeleton /> : content}
+          </main>
         </div>
         <BottomNav role={session.role} active={screen} setActive={(s) => gotoWithFilter(s, {})} />
       </div>
