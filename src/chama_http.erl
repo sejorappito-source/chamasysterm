@@ -10,8 +10,19 @@
     reply_bad_request/2,
     reply_unauthorized/2,
     binding/3,
-    qs_val/3
+    qs_val/3,
+    account_code/1
 ]).
+
+%% Every request except onboarding/signin/association-listing must carry
+%% this header identifying which tenant (association) it belongs to.
+%% Returns {ok, Code} or {error, missing_account_code}.
+account_code(Req) ->
+    case cowboy_req:header(<<"x-account-code">>, Req, undefined) of
+        undefined -> {error, missing_account_code};
+        <<"">> -> {error, missing_account_code};
+        Code -> {ok, Code}
+    end.
 
 %% Reads and decodes a JSON request body. Returns {ok, Map, Req2} or
 %% {error, invalid_json, Req2}.

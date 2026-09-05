@@ -2,16 +2,12 @@
 
 -export([init/2]).
 
-%% GET  /api/setup  -> whether the association has completed onboarding
-%% POST /api/setup  -> { name, phone, location, chairPassword, regions: [{code,name}] }
+%% POST /api/setup -> { name, phone, location, chairPassword, regions: [{code,name}] }
+%%   Creates a new association (tenant) and returns its generated accountCode.
 init(Req0, State) ->
     Method = cowboy_req:method(Req0),
     Req1 = handle(Method, Req0),
     {ok, Req1, State}.
-
-handle(<<"GET">>, Req) ->
-    {ok, Status} = chama_store:setup_status(),
-    chama_http:reply_ok(Status, Req);
 
 handle(<<"POST">>, Req0) ->
     case chama_http:read_json(Req0) of
@@ -20,8 +16,8 @@ handle(<<"POST">>, Req0) ->
         {ok, Params, Req1} ->
             case chama_store:onboard(Params) of
                 {ok, Result} -> chama_http:reply_created(Result, Req1);
-                {error, already_setup} -> chama_http:reply_error(409, <<"Association is already set up">>, Req1);
-                {error, {bad_request, Msg}} -> chama_http:reply_bad_request(Msg, Req1)
+                {error, {bad_request, Msg}} -> chama_http:reply_bad_request(Msg, Req1);
+                {error, {internal_error, Msg}} -> chama_http:reply_error(500, Msg, Req1)
             end
     end;
 

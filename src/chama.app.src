@@ -8,7 +8,8 @@
         stdlib,
         crypto,
         cowboy,
-        jsx
+        jsx,
+        epgsql
     ]},
     {env, []},
     {modules, []},

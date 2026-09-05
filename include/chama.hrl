@@ -6,6 +6,7 @@
 %% ============================================================
 
 -record(association, {
+    account_code      :: binary(),
     name              :: binary(),
     phone             :: binary(),
     location          :: binary(),
@@ -14,7 +15,8 @@
 
 -record(region, {
     code :: binary(),
-    name :: binary()
+    name :: binary(),
+    password_hash :: binary() | undefined
 }).
 
 -record(member, {
