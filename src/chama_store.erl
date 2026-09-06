@@ -368,7 +368,11 @@ dispatch({add_member, AccountCode, Form}, Conn, State) ->
     case validate_member_form(Form) of
         {error, Reason} -> {{error, {bad_request, Reason}}, State};
         ok ->
-            Id = chama_util:new_id(<<"m">>),
+            %% Accepts a client-generated id so the offline queue can
+            %% retry this call safely: if the phone already sent this
+            %% exact insert once but never saw the response, retrying
+            %% with the same id just no-ops instead of duplicating.
+            Id = maps:get(<<"id">>, Form, chama_util:new_id(<<"m">>)),
             Region = maps:get(<<"region">>, Form),
             NationalId = maps:get(<<"nationalId">>, Form),
             FullName = maps:get(<<"fullName">>, Form),
@@ -376,14 +380,20 @@ dispatch({add_member, AccountCode, Form}, Conn, State) ->
             DateJoined = maps:get(<<"dateJoined">>, Form, chama_util:today()),
             JoiningFee = chama_util:to_number(maps:get(<<"joiningFee">>, Form, 0)),
             Monthly = chama_util:to_number(maps:get(<<"monthly">>, Form, 0)),
-            {ok, 1} = epgsql:equery(Conn,
+            {ok, InsertCount} = epgsql:equery(Conn,
                 "INSERT INTO members (id, account_code, national_id, full_name, phone, region_code, date_joined, joining_fee, monthly, status, paid_this_month) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',false)",
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',false) ON CONFLICT (id) DO NOTHING",
                 [Id, AccountCode, NationalId, FullName, Phone, Region, DateJoined, JoiningFee, Monthly]),
-            RegionName = region_name(Conn, AccountCode, Region),
-            write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Added member ID ">>, NationalId, <<" (">>, FullName, <<")">>]), RegionName),
-            Member = #member{id = Id, national_id = NationalId, full_name = FullName, phone = Phone, region = Region, date_joined = DateJoined, joining_fee = JoiningFee, monthly = Monthly, status = active, paid_this_month = false},
-            {{ok, chama_view:member_to_map(Member)}, State}
+            case InsertCount of
+                1 ->
+                    RegionName = region_name(Conn, AccountCode, Region),
+                    write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Added member ID ">>, NationalId, <<" (">>, FullName, <<")">>]), RegionName);
+                0 -> ok %% already recorded on a previous attempt - don't duplicate the audit entry
+            end,
+            case epgsql:equery(Conn, member_select() ++ " WHERE account_code = $1 AND id = $2", [AccountCode, Id]) of
+                {ok, _, [Row]} -> {{ok, chama_view:member_to_map(row_to_member(Row))}, State};
+                {ok, _, []} -> {{error, {conflict, <<"That national ID is already registered under a different member">>}}, State}
+            end
     end;
 
 dispatch({list_transactions, AccountCode, Filters}, Conn, State) ->
@@ -401,6 +411,7 @@ dispatch({add_payment, AccountCode, Params}, Conn, State) ->
     Amount = chama_util:to_number(maps:get(<<"amount">>, Params, 0)),
     Reference = maps:get(<<"reference">>, Params, <<"MANUAL">>),
     Method = maps:get(<<"method">>, Params, <<"Cash">>),
+    TxId = maps:get(<<"id">>, Params, chama_util:new_id(<<"t">>)),
     case MemberId of
         undefined -> {{error, {bad_request, <<"memberId is required">>}}, State};
         _ ->
@@ -411,17 +422,22 @@ dispatch({add_payment, AccountCode, Params}, Conn, State) ->
                     case Amount =< 0 of
                         true -> {{error, {bad_request, <<"amount must be greater than zero">>}}, State};
                         false ->
-                            {ok, _} = epgsql:equery(Conn, "UPDATE members SET paid_this_month = true WHERE account_code = $1 AND id = $2", [AccountCode, MemberId]),
-                            TxId = chama_util:new_id(<<"t">>),
                             Date = chama_util:today(),
-                            {ok, 1} = epgsql:equery(Conn,
+                            {ok, InsertCount} = epgsql:equery(Conn,
                                 "INSERT INTO transactions (id, account_code, date, member_id, member_name, region_code, type, amount, method, recorded_by, status, reference) "
-                                "VALUES ($1,$2,$3,$4,$5,$6,'payment',$7,$8,'Secretary','Completed',$9)",
+                                "VALUES ($1,$2,$3,$4,$5,$6,'payment',$7,$8,'Secretary','Completed',$9) ON CONFLICT (id) DO NOTHING",
                                 [TxId, AccountCode, Date, Member#member.national_id, Member#member.full_name, Member#member.region, Amount, Method, Reference]),
-                            RegionName = region_name(Conn, AccountCode, Member#member.region),
-                            write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Recorded payment of KES ">>, amount_bin(Amount), <<" for ">>, Member#member.full_name]), RegionName),
-                            Tx = #transaction{id = TxId, date = Date, member_id = Member#member.national_id, member_name = Member#member.full_name, region = Member#member.region, type = payment, amount = Amount, method = Method, recorded_by = <<"Secretary">>, status = <<"Completed">>, reference = Reference},
-                            {{ok, chama_view:transaction_to_map(Tx)}, State}
+                            case InsertCount of
+                                1 ->
+                                    {ok, _} = epgsql:equery(Conn, "UPDATE members SET paid_this_month = true WHERE account_code = $1 AND id = $2", [AccountCode, MemberId]),
+                                    RegionName = region_name(Conn, AccountCode, Member#member.region),
+                                    write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Recorded payment of KES ">>, amount_bin(Amount), <<" for ">>, Member#member.full_name]), RegionName);
+                                0 -> ok %% this exact payment was already recorded on a previous attempt
+                            end,
+                            {ok, _, [TxRow]} = epgsql:equery(Conn,
+                                "SELECT id, date, member_id, member_name, region_code, type, amount, method, recorded_by, status, reference FROM transactions WHERE account_code = $1 AND id = $2",
+                                [AccountCode, TxId]),
+                            {{ok, chama_view:transaction_to_map(row_to_transaction(TxRow))}, State}
                     end
             end
     end;
@@ -445,19 +461,23 @@ dispatch({record_death, AccountCode, Params}, Conn, State) ->
         {ok, _, []} -> {{error, not_found}, State};
         {ok, _, [Row]} ->
             Member = row_to_member(Row),
-            {ok, _} = epgsql:equery(Conn, "UPDATE members SET status = 'deceased' WHERE account_code = $1 AND id = $2", [AccountCode, MemberId]),
-            FuneralId = chama_util:new_id(<<"f">>),
+            FuneralId = maps:get(<<"id">>, Params, chama_util:new_id(<<"f">>)),
             Dod = maps:get(<<"dateOfDeath">>, Params, chama_util:today()),
             Allocated = chama_util:to_number(maps:get(<<"allocated">>, Params, 0)),
             Notes = maps:get(<<"notes">>, Params, <<"">>),
-            {ok, 1} = epgsql:equery(Conn,
+            {ok, InsertCount} = epgsql:equery(Conn,
                 "INSERT INTO funerals (id, account_code, member_id, member_name, national_id, region_code, date_of_death, allocated, used, notes) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9)",
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9) ON CONFLICT (id) DO NOTHING",
                 [FuneralId, AccountCode, Member#member.id, Member#member.full_name, Member#member.national_id, Member#member.region, Dod, Allocated, Notes]),
-            RegionName = region_name(Conn, AccountCode, Member#member.region),
-            write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Recorded death of member ">>, Member#member.full_name]), RegionName),
-            Funeral = #funeral{id = FuneralId, member_id = Member#member.id, member_name = Member#member.full_name, national_id = Member#member.national_id, region = Member#member.region, date_of_death = Dod, allocated = Allocated, used = 0, notes = Notes, expenses = []},
-            {{ok, chama_view:funeral_to_map(Funeral)}, State}
+            {ok, _} = epgsql:equery(Conn, "UPDATE members SET status = 'deceased' WHERE account_code = $1 AND id = $2", [AccountCode, MemberId]),
+            case InsertCount of
+                1 ->
+                    RegionName = region_name(Conn, AccountCode, Member#member.region),
+                    write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Recorded death of member ">>, Member#member.full_name]), RegionName);
+                0 -> ok %% already recorded on a previous attempt
+            end,
+            {ok, _, [FRow]} = epgsql:equery(Conn, funeral_select() ++ " WHERE account_code = $1 AND id = $2", [AccountCode, FuneralId]),
+            {{ok, chama_view:funeral_to_map(attach_expenses(Conn, row_to_funeral_base(FRow)))}, State}
     end;
 
 dispatch({add_funeral_expense, AccountCode, FuneralId, Expense}, Conn, State) ->
@@ -470,21 +490,29 @@ dispatch({add_funeral_expense, AccountCode, FuneralId, Expense}, Conn, State) ->
             case Amount =< 0 of
                 true -> {{error, {bad_request, <<"amount must be greater than zero">>}}, State};
                 false ->
-                    ExpenseId = chama_util:new_id(<<"e">>),
+                    ExpenseId = maps:get(<<"id">>, Expense, chama_util:new_id(<<"e">>)),
                     Date = chama_util:today(),
-                    {ok, 1} = epgsql:equery(Conn,
-                        "INSERT INTO funeral_expenses (id, funeral_id, account_code, description, amount, date) VALUES ($1,$2,$3,$4,$5,$6)",
+                    {ok, InsertCount} = epgsql:equery(Conn,
+                        "INSERT INTO funeral_expenses (id, funeral_id, account_code, description, amount, date) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
                         [ExpenseId, FuneralId, AccountCode, Description, Amount, Date]),
-                    {ok, _} = epgsql:equery(Conn, "UPDATE funerals SET used = used + $1 WHERE account_code = $2 AND id = $3", [Amount, AccountCode, FuneralId]),
-                    TxId = chama_util:new_id(<<"t">>),
-                    {ok, 1} = epgsql:equery(Conn,
-                        "INSERT INTO transactions (id, account_code, date, member_id, member_name, region_code, type, amount, method, recorded_by, status, reference) "
-                        "VALUES ($1,$2,$3,$4,$5,$6,'expense',$7,'Cash','Secretary','Completed',$8)",
-                        [TxId, AccountCode, Date, Funeral#funeral.national_id, Funeral#funeral.member_name, Funeral#funeral.region, Amount, upper_bin(Description)]),
-                    RegionName = region_name(Conn, AccountCode, Funeral#funeral.region),
-                    write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Logged funeral expense — ">>, Description, <<", KES ">>, amount_bin(Amount)]), RegionName),
-                    UpdatedFuneral = attach_expenses(Conn, Funeral#funeral{used = Funeral#funeral.used + Amount}),
-                    {{ok, chama_view:funeral_to_map(UpdatedFuneral)}, State}
+                    %% Gate every side effect on InsertCount so a retried
+                    %% call (same client-generated ExpenseId) can never
+                    %% double-count the balance or log a duplicate
+                    %% transaction/audit entry.
+                    case InsertCount of
+                        1 ->
+                            {ok, _} = epgsql:equery(Conn, "UPDATE funerals SET used = used + $1 WHERE account_code = $2 AND id = $3", [Amount, AccountCode, FuneralId]),
+                            TxId = chama_util:new_id(<<"t">>),
+                            {ok, 1} = epgsql:equery(Conn,
+                                "INSERT INTO transactions (id, account_code, date, member_id, member_name, region_code, type, amount, method, recorded_by, status, reference) "
+                                "VALUES ($1,$2,$3,$4,$5,$6,'expense',$7,'Cash','Secretary','Completed',$8)",
+                                [TxId, AccountCode, Date, Funeral#funeral.national_id, Funeral#funeral.member_name, Funeral#funeral.region, Amount, upper_bin(Description)]),
+                            RegionName = region_name(Conn, AccountCode, Funeral#funeral.region),
+                            write_audit(Conn, AccountCode, <<"Secretary">>, iolist_to_binary([<<"Logged funeral expense — ">>, Description, <<", KES ">>, amount_bin(Amount)]), RegionName);
+                        0 -> ok %% already applied on a previous attempt
+                    end,
+                    {ok, _, [FRow]} = epgsql:equery(Conn, funeral_select() ++ " WHERE account_code = $1 AND id = $2", [AccountCode, FuneralId]),
+                    {{ok, chama_view:funeral_to_map(attach_expenses(Conn, row_to_funeral_base(FRow)))}, State}
             end
     end;
 

@@ -5,9 +5,9 @@ import {
   Check, X, Shield, Activity, Building2, Phone, Calendar, Banknote,
   TrendingUp, ArrowRight, Plus, ChevronLeft, Lock, KeyRound, Eye,
   EyeOff, CircleUserRound, ClipboardList, PhoneCall, MapPinned,
-  BadgeCheck, CircleAlert, ChevronDown, Menu
+  BadgeCheck, CircleAlert, ChevronDown, Menu, RefreshCw, CloudOff
 } from "lucide-react";
-import { api, loadAllData } from "./api";
+import { api, loadAllData, startAutoSync, syncNow, getPendingSyncCount } from "./api";
 /* ============================================================
    DESIGN TOKENS
    Navy   #0F1E33 / #16283F (hover) / brass accent #C89B4C
@@ -346,6 +346,26 @@ function SidebarSkeleton() {
 // status (and, if already set up, while the first data load runs) so the
 // initial screen previews the shape of the eventual dashboard instead of a
 // blank page or a spinner.
+// Shows nothing at all when there's nothing pending — the common case
+// when the connection is fine. Only appears once there's actually a
+// queued write waiting for a network, so normal usage looks identical
+// to before this existed.
+function SyncBadge({ pendingCount, syncing, onSyncNow }) {
+  if (!pendingCount) return null;
+  return (
+    <button
+      onClick={onSyncNow}
+      disabled={syncing}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition"
+      style={{ background: "#FEF3E2", color: "#9A6B1E", border: "1px solid #F5D9A8" }}
+      title="Some changes haven't reached the server yet"
+    >
+      {syncing ? <RefreshCw size={13} className="animate-spin" /> : <CloudOff size={13} />}
+      {syncing ? "Syncing…" : `${pendingCount} change${pendingCount === 1 ? "" : "s"} waiting to sync`}
+    </button>
+  );
+}
+
 function AppShellSkeleton() {
   return (
     <>
@@ -2512,6 +2532,37 @@ export default function App() {
   const [data, setData] = useState({ members: [], transactions: [], funerals: [], auditLog: [], projects: [], schedule: [] });
   const [loadError, setLoadError] = useState("");
   const [dataLoading, setDataLoading] = useState(false);
+  const [pendingSync, setPendingSync] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+
+  // Starts the background retry loop once, on first mount. Purely
+  // additive — if the connection is fine and nothing is ever queued,
+  // this has no visible effect on the app at all.
+  useEffect(() => {
+    startAutoSync();
+  }, []);
+
+  // Lightweight poll for the pending-count badge. IndexedDB reads are
+  // cheap, and this only ever shows anything once a write has actually
+  // been queued.
+  useEffect(() => {
+    const check = () => { getPendingSyncCount().then(setPendingSync).catch(() => {}); };
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    try {
+      await syncNow();
+      const count = await getPendingSyncCount();
+      setPendingSync(count);
+      if (session) await refreshData(session); // pull the now-confirmed server state
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const refreshData = async (session) => {
     setDataLoading(true);
@@ -2766,7 +2817,8 @@ export default function App() {
       <div className="flex min-h-screen" style={{ background: "#F4F6F8" }}>
         <Sidebar role={session.role} active={screen} setActive={(s) => gotoWithFilter(s, {})} assocName={session.assocName} regionLabel={regionLabel} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col max-w-[1400px]">
-          <div className="flex justify-end px-6 lg:px-8 pt-4">
+          <div className="flex items-center justify-end gap-3 px-6 lg:px-8 pt-4">
+            <SyncBadge pendingCount={pendingSync} syncing={syncing} onSyncNow={handleSyncNow} />
             <TopMenuButton onOpenSettings={() => gotoWithFilter("settings", {})} onOpenSchedule={() => gotoWithFilter("schedule", {})} onLogout={handleLogout} />
           </div>
           <main className="flex-1 px-6 lg:px-8 pb-24 md:pb-8">
