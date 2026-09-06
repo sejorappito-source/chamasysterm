@@ -41,6 +41,9 @@ routes() ->
             {"/", cowboy_static, {priv_file, chama, "static/index.html"}},
             {"/assets/[...]", cowboy_static, {priv_dir, chama, "static/assets"}},
             {"/favicon.ico", cowboy_static, {priv_file, chama, "static/favicon.ico"}},
+            {"/manifest.json", cowboy_static, {priv_file, chama, "static/manifest.json"}},
+            {"/sw.js", cowboy_static, {priv_file, chama, "static/sw.js"}},
+            {"/icons/[...]", cowboy_static, {priv_dir, chama, "static/icons"}},
             %% Any other unmatched path (no client-side router is used by
             %% this app, but this keeps a hard refresh or bookmark safe)
             %% falls back to index.html.
