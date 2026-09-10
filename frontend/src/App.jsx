@@ -1294,18 +1294,28 @@ function MembersPage({ data, scopeRegion, regions, role, goto, initialRegion }) 
 /* ============================================================
    ADD MEMBER PAGE
 ============================================================ */
-function AddMemberPage({ regions, scopeRegion, onAdd }) {
+function AddMemberPage({ regions, scopeRegion, onAdd, goto }) {
   const [form, setForm] = useState({ nationalId: "", fullName: "", phone: "", region: scopeRegion || regions[0]?.code, dateJoined: "", joiningFee: "2000", monthly: "500" });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     if (!form.nationalId || !form.fullName || !form.phone || !form.dateJoined) { setError("Please complete all required fields."); return; }
     setError("");
-    onAdd(form);
-    setSuccess(true);
-    setForm({ nationalId: "", fullName: "", phone: "", region: scopeRegion || regions[0]?.code, dateJoined: "", joiningFee: "2000", monthly: "500" });
-    setTimeout(() => setSuccess(false), 3000);
+    setSubmitting(true);
+    try {
+      await onAdd(form);
+      setSuccess(true);
+      setForm({ nationalId: "", fullName: "", phone: "", region: scopeRegion || regions[0]?.code, dateJoined: "", joiningFee: "2000", monthly: "500" });
+      // Brief pause so the confirmation is visible, then head back to the
+      // dashboard automatically instead of leaving the user stranded here.
+      setTimeout(() => { goto?.("dashboard"); }, 1000);
+    } catch (e) {
+      setError(e.message || "Could not register member.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -1332,7 +1342,7 @@ function AddMemberPage({ regions, scopeRegion, onAdd }) {
         </div>
         {error && <p className="text-sm mt-4" style={{ color: "#C23B32" }}>{error}</p>}
         <div className="mt-6">
-          <PrimaryButton icon={UserPlus} onClick={submit}>Register member</PrimaryButton>
+          <PrimaryButton icon={UserPlus} onClick={submit} disabled={submitting}>{submitting ? "Registering..." : "Register member"}</PrimaryButton>
         </div>
       </Card>
     </div>
@@ -1342,7 +1352,7 @@ function AddMemberPage({ regions, scopeRegion, onAdd }) {
 /* ============================================================
    PAYMENTS PAGE
 ============================================================ */
-function PaymentsPage({ data, regions, scopeRegion, onAddPayment }) {
+function PaymentsPage({ data, regions, scopeRegion, onAddPayment, goto }) {
   const members = data.members.filter((m) => (scopeRegion ? m.region === scopeRegion : true) && m.status === "Active");
   const [query, setQuery] = useState("");
   const [showResults, setShowResults] = useState(false);
@@ -1351,6 +1361,7 @@ function PaymentsPage({ data, regions, scopeRegion, onAddPayment }) {
   const [reference, setReference] = useState("");
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const selected = data.members.find((m) => m.id === memberId);
 
   const results = query.trim()
@@ -1433,13 +1444,22 @@ function PaymentsPage({ data, regions, scopeRegion, onAddPayment }) {
         </div>
         {error && <p className="text-sm mt-4" style={{ color: "#C23B32" }}>{error}</p>}
         <div className="mt-6">
-          <PrimaryButton icon={CreditCard} onClick={() => {
+          <PrimaryButton icon={CreditCard} disabled={submitting} onClick={async () => {
             if (!memberId || !amount) { setError("Search for and select a member, then enter an amount."); return; }
             setError("");
-            onAddPayment({ member: selected, amount, reference: reference || "MANUAL" });
-            setSuccess(true); setReference("");
-            setTimeout(() => setSuccess(false), 3000);
-          }}>Record payment</PrimaryButton>
+            setSubmitting(true);
+            try {
+              await onAddPayment({ member: selected, amount, reference: reference || "MANUAL" });
+              setSuccess(true); setReference("");
+              // Brief pause so the confirmation is visible, then head back to
+              // the dashboard automatically instead of leaving the user stranded here.
+              setTimeout(() => { goto?.("dashboard"); }, 1000);
+            } catch (e) {
+              setError(e.message || "Could not record payment.");
+            } finally {
+              setSubmitting(false);
+            }
+          }}>{submitting ? "Recording..." : "Record payment"}</PrimaryButton>
         </div>
       </Card>
     </div>
@@ -2302,6 +2322,9 @@ function RegionsPage({ data, regions, goto, onAddRegion, onUpdateRegion, onDelet
       if (selected === deleteTarget.code) setSelected("All");
       setDeleteTarget(null);
       setDeleteError("");
+      // Don't leave the user on a page referencing what they just deleted —
+      // send them back to the dashboard automatically.
+      goto?.("dashboard");
     } catch (e) {
       setDeleteError(e.message || "Could not delete region.");
     }
@@ -2797,8 +2820,8 @@ export default function App() {
     switch (screen) {
       case "dashboard": content = <SecretaryDashboard data={displayData} regionCode={rc} regionName={regionObj?.name} goto={gotoWithFilter} />; break;
       case "members": content = <MembersPage data={displayData} regions={regions} scopeRegion={rc} role="Secretary" goto={gotoWithFilter} />; break;
-      case "addMember": content = <AddMemberPage regions={regions} scopeRegion={rc} onAdd={addMember} />; break;
-      case "payments": content = <PaymentsPage data={displayData} regions={regions} scopeRegion={rc} onAddPayment={addPayment} />; break;
+      case "addMember": content = <AddMemberPage regions={regions} scopeRegion={rc} onAdd={addMember} goto={gotoWithFilter} />; break;
+      case "payments": content = <PaymentsPage data={displayData} regions={regions} scopeRegion={rc} onAddPayment={addPayment} goto={gotoWithFilter} />; break;
       case "transactions": content = <TransactionsPage data={displayData} regions={regions} scopeRegion={rc} initialType={navContext.type} initialRange={navContext.range} />; break;
       case "unpaid": content = <UnpaidPage data={displayData} regions={regions} scopeRegion={rc} goto={gotoWithFilter} currentPeriod={currentPeriod} />; break;
       case "schedule": content = <SchedulePage data={displayData} canManage={false} />; break;
